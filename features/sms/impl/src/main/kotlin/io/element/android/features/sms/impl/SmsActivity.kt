@@ -19,19 +19,22 @@ import io.element.android.compound.theme.ElementTheme
 /**
  * Écran des SMS : liste des conversations, puis fil d'une conversation.
  *
- * Ouvert par l'icône "Pigeon SMS" ou en touchant une notification de SMS (qui ouvre directement la conversation).
+ * Ouvert par l'icône "Pigeon SMS", en touchant une notification de SMS, ou par "Envoyer un SMS" depuis une autre app.
  */
+/** Conversation à ouvrir à l'arrivée sur l'écran, avec un brouillon éventuel. */
+internal data class SmsTarget(val address: String, val draft: String?)
+
 class SmsActivity : ComponentActivity() {
-    /** Conversation à ouvrir (fournie par une notification), ou null pour la liste. */
-    private var address by mutableStateOf<String?>(null)
+    /** Conversation à ouvrir (notification, "Envoyer un SMS" depuis une autre app), ou null pour la liste. */
+    private var target by mutableStateOf<SmsTarget?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        address = intent.getStringExtra(EXTRA_ADDRESS)
+        target = intent.toTarget()
         setContent {
             ElementTheme {
-                SmsApp(initialAddress = address)
+                SmsApp(target = target)
             }
         }
     }
@@ -40,16 +43,24 @@ class SmsActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        address = intent.getStringExtra(EXTRA_ADDRESS)
+        target = intent.toTarget()
     }
+
+    private fun Intent.toTarget(): SmsTarget? =
+        getStringExtra(EXTRA_ADDRESS)?.let { SmsTarget(address = it, draft = getStringExtra(EXTRA_DRAFT)) }
 
     companion object {
         private const val EXTRA_ADDRESS = "address"
+        private const val EXTRA_DRAFT = "draft"
 
-        /** Ouvre l'écran des SMS, directement sur la conversation avec [address] si elle est fournie. */
-        fun intent(context: Context, address: String? = null): Intent =
+        /**
+         * Ouvre l'écran des SMS, directement sur la conversation avec [address] si elle est fournie,
+         * avec [draft] déjà saisi dans la zone de texte.
+         */
+        fun intent(context: Context, address: String? = null, draft: String? = null): Intent =
             Intent(context, SmsActivity::class.java)
                 .putExtra(EXTRA_ADDRESS, address)
+                .putExtra(EXTRA_DRAFT, draft)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
     }
 }

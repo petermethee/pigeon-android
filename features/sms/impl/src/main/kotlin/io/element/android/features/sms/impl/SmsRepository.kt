@@ -21,17 +21,24 @@ data class SmsConversation(
     val address: String,
     val displayName: String,
     val snippet: String,
+    /** Le dernier SMS est un SMS envoyé (affiché "Vous : …"). */
+    val lastIsOutgoing: Boolean,
     val date: Long,
     val unreadCount: Int,
 )
+
+/** État d'un SMS. */
+enum class SmsStatus { RECEIVED, SENDING, SENT, FAILED }
 
 /** Un SMS dans une conversation. */
 data class SmsItem(
     val id: Long,
     val body: String,
     val date: Long,
-    val isIncoming: Boolean,
-)
+    val status: SmsStatus,
+) {
+    val isIncoming: Boolean get() = status == SmsStatus.RECEIVED
+}
 
 /**
  * Lecture des SMS dans la base SMS du téléphone (le "Telephony provider").
@@ -62,6 +69,7 @@ object SmsRepository {
                     address = row.address,
                     displayName = row.address,
                     snippet = row.body,
+                    lastIsOutgoing = !row.isIncoming,
                     date = row.date,
                     unreadCount = 0,
                 )
@@ -75,7 +83,7 @@ object SmsRepository {
     fun loadMessages(context: Context, threadId: Long): List<SmsItem> {
         val items = ArrayList<SmsItem>()
         query(context, "${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString()), "${Telephony.Sms.DATE} ASC") { row ->
-            items += SmsItem(id = row.id, body = row.body, date = row.date, isIncoming = row.isIncoming)
+            items += SmsItem(id = row.id, body = row.body, date = row.date, status = row.status)
         }
         return items
     }
@@ -111,9 +119,19 @@ object SmsRepository {
         val address: String,
         val body: String,
         val date: Long,
-        val isIncoming: Boolean,
+        val type: Int,
         val read: Boolean,
-    )
+    ) {
+        val isIncoming: Boolean get() = type == Telephony.Sms.MESSAGE_TYPE_INBOX
+        val status: SmsStatus
+            get() = when (type) {
+                Telephony.Sms.MESSAGE_TYPE_INBOX -> SmsStatus.RECEIVED
+                Telephony.Sms.MESSAGE_TYPE_SENT -> SmsStatus.SENT
+                Telephony.Sms.MESSAGE_TYPE_FAILED -> SmsStatus.FAILED
+                // Boîte d'envoi, file d'attente : pas encore parti.
+                else -> SmsStatus.SENDING
+            }
+    }
 
     private fun query(context: Context, selection: String?, args: Array<String>?, sortOrder: String, onRow: (Row) -> Unit) {
         try {
@@ -133,7 +151,7 @@ object SmsRepository {
                             address = c.getString(iAddress).orEmpty(),
                             body = c.getString(iBody).orEmpty(),
                             date = c.getLong(iDate),
-                            isIncoming = c.getInt(iType) == Telephony.Sms.MESSAGE_TYPE_INBOX,
+                            type = c.getInt(iType),
                             read = c.getInt(iRead) == 1,
                         )
                     )

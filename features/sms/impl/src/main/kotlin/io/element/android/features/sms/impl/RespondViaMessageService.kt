@@ -11,13 +11,17 @@ import android.os.IBinder
 import timber.log.Timber
 
 /**
- * Réponse rapide par SMS quand on refuse un appel ("Je te rappelle", etc.).
- *
- * Pas encore réalisé (étape envoi) : la demande est ignorée.
+ * Réponse rapide par SMS quand on refuse un appel ("Je te rappelle", etc.) : envoie le SMS choisi.
  */
 class RespondViaMessageService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Timber.w("Réponse rapide par SMS : pas encore prise en charge par Pigeon")
+        val address = intent?.data?.smsAddress()
+        val body = intent?.getStringExtra(Intent.EXTRA_TEXT)
+        if (address != null && !body.isNullOrBlank()) {
+            SmsSender.send(this, address, body)
+        } else {
+            Timber.w("Réponse rapide : numéro ou texte manquant")
+        }
         stopSelf(startId)
         return START_NOT_STICKY
     }

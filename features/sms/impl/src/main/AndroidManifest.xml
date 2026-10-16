@@ -30,6 +30,7 @@
             android:exported="false"
             android:label="@string/sms_launcher_label"
             android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:taskAffinity="io.github.petermethee.pigeon.sms" />
 
         <!-- Deuxième icône "Pigeon SMS" sur l'écran d'accueil (provisoire, en attendant le fil fusionné). -->
@@ -64,6 +65,11 @@
                 <data android:mimeType="application/vnd.wap.mms-message" />
             </intent-filter>
         </receiver>
+
+        <!-- Résultat de l'envoi d'un SMS (envoyé ou échec). -->
+        <receiver
+            android:name="io.element.android.features.sms.impl.SmsSentReceiver"
+            android:exported="false" />
 
         <!-- 3. Écran de rédaction, ouvert par les autres apps (ex. "Envoyer un SMS" depuis les contacts). -->
         <activity

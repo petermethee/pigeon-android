@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Telephony
 import android.text.format.DateUtils
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -34,14 +37,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -50,26 +60,30 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.element.android.compound.theme.ElementTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Conversation ouverte : son fil et son correspondant. */
-private data class OpenThread(val threadId: Long, val address: String, val title: String)
+/** Conversation ouverte : son fil, son correspondant et un brouillon éventuel. */
+private data class OpenThread(val threadId: Long, val address: String, val title: String, val draft: String? = null)
 
 @Composable
-internal fun SmsApp(initialAddress: String?) {
+internal fun SmsApp(target: SmsTarget?) {
     val context = LocalContext.current
     var openThread by remember { mutableStateOf<OpenThread?>(null) }
+
     // Afficher le nom des contacts plutôt que leur numéro : demandé une fois par ouverture tant que ce n'est pas accordé.
     var contactsGranted by remember { mutableIntStateOf(0) }
     var askedContacts by rememberSaveable { mutableStateOf(false) }
@@ -87,22 +101,31 @@ internal fun SmsApp(initialAddress: String?) {
     // Augmente à chaque changement dans la base SMS (nouveau SMS…) ou à l'accord des contacts : déclenche un rechargement.
     val version = rememberSmsChanges(context) + contactsGranted
 
-    // Ouverture depuis une notification : directement sur la conversation.
-    LaunchedEffect(initialAddress) {
-        if (initialAddress != null) {
+    // Ouvre la conversation avec un numéro (notification, "Envoyer un SMS" depuis une autre app, bouton +).
+    val scope = rememberCoroutineScope()
+    fun openAddress(address: String, draft: String? = null) {
+        scope.launch {
             openThread = withContext(Dispatchers.IO) {
                 OpenThread(
-                    threadId = SmsRepository.threadIdFor(context, initialAddress),
-                    address = initialAddress,
-                    title = SmsRepository.displayName(context, initialAddress),
+                    threadId = SmsRepository.threadIdFor(context, address),
+                    address = address,
+                    title = SmsRepository.displayName(context, address),
+                    draft = draft,
                 )
             }
         }
     }
+    LaunchedEffect(target) {
+        target?.let { openAddress(it.address, it.draft) }
+    }
 
     val thread = openThread
     if (thread == null) {
-        ConversationListScreen(version = version, onOpen = { openThread = OpenThread(it.threadId, it.address, it.displayName) })
+        ConversationListScreen(
+            version = version,
+            onOpen = { openThread = OpenThread(it.threadId, it.address, it.displayName) },
+            onNewConversation = { openAddress(it) },
+        )
     } else {
         BackHandler { openThread = null }
         ThreadScreen(thread = thread, version = version, onBack = { openThread = null })
@@ -125,17 +148,25 @@ private fun rememberSmsChanges(context: Context): Int {
     return version
 }
 
+// ── Liste des conversations ─────────────────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConversationListScreen(version: Int, onOpen: (SmsConversation) -> Unit) {
+private fun ConversationListScreen(version: Int, onOpen: (SmsConversation) -> Unit, onNewConversation: (String) -> Unit) {
     val context = LocalContext.current
     var conversations by remember { mutableStateOf<List<SmsConversation>?>(null) }
+    var showNewConversation by remember { mutableStateOf(false) }
     LaunchedEffect(version) {
         conversations = withContext(Dispatchers.IO) { SmsRepository.loadConversations(context) }
     }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("SMS", style = ElementTheme.typography.fontHeadingSmMedium) }) },
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showNewConversation = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "Nouvelle conversation")
+            }
+        },
         containerColor = ElementTheme.colors.bgCanvasDefault,
     ) { padding ->
         val list = conversations
@@ -153,6 +184,40 @@ private fun ConversationListScreen(version: Int, onOpen: (SmsConversation) -> Un
             }
         }
     }
+
+    if (showNewConversation) {
+        NewConversationDialog(
+            onDismiss = { showNewConversation = false },
+            onConfirm = { number ->
+                showNewConversation = false
+                onNewConversation(number)
+            },
+        )
+    }
+}
+
+@Composable
+private fun NewConversationDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    var number by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nouvelle conversation") },
+        text = {
+            OutlinedTextField(
+                value = number,
+                onValueChange = { number = it },
+                label = { Text("Numéro de téléphone") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(number.trim()) }, enabled = number.isNotBlank()) { Text("Ouvrir") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annuler") }
+        },
+    )
 }
 
 @Composable
@@ -174,7 +239,7 @@ private fun ConversationRow(conversation: SmsConversation, onClick: () -> Unit) 
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = conversation.snippet,
+                text = if (conversation.lastIsOutgoing) "Vous : ${conversation.snippet}" else conversation.snippet,
                 style = ElementTheme.typography.fontBodyMdRegular,
                 color = if (unread) ElementTheme.colors.textPrimary else ElementTheme.colors.textSecondary,
                 maxLines = 2,
@@ -207,11 +272,16 @@ private fun ConversationRow(conversation: SmsConversation, onClick: () -> Unit) 
     }
 }
 
+// ── Fil d'une conversation ──────────────────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var messages by remember(thread.threadId) { mutableStateOf<List<SmsItem>>(emptyList()) }
+    var text by rememberSaveable(thread.threadId) { mutableStateOf(thread.draft.orEmpty()) }
+
     LaunchedEffect(thread.threadId, version) {
         messages = withContext(Dispatchers.IO) {
             SmsRepository.markThreadRead(context, thread.threadId)
@@ -223,6 +293,18 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.scrollToItem(messages.lastIndex)
+    }
+
+    fun send() {
+        val body = text.trim()
+        if (body.isEmpty()) return
+        text = ""
+        scope.launch {
+            val started = withContext(Dispatchers.IO) { SmsSender.send(context, thread.address, body) }
+            if (!started) {
+                Toast.makeText(context, "Envoi impossible : Pigeon doit être l'app SMS par défaut.", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     Scaffold(
@@ -237,16 +319,7 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
             )
         },
         bottomBar = {
-            // L'envoi arrive à l'étape 4.
-            Text(
-                text = "Envoi de SMS depuis Pigeon : bientôt",
-                style = ElementTheme.typography.fontBodySmRegular,
-                color = ElementTheme.colors.textSecondary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(ElementTheme.colors.bgSubtleSecondary)
-                    .padding(16.dp),
-            )
+            Composer(text = text, onTextChange = { text = it }, onSend = ::send)
         },
         containerColor = ElementTheme.colors.bgCanvasDefault,
     ) { padding ->
@@ -262,6 +335,32 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
             modifier = Modifier.fillMaxSize(),
         ) {
             items(messages, key = { it.id }) { MessageBubble(it) }
+        }
+    }
+}
+
+/** Zone de saisie, qui remonte au-dessus du clavier. */
+@Composable
+private fun Composer(text: String, onTextChange: (String) -> Unit, onSend: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ElementTheme.colors.bgCanvasDefault)
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = onTextChange,
+            placeholder = { Text("SMS") },
+            maxLines = 5,
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onSend, enabled = text.isNotBlank()) {
+            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Envoyer")
         }
     }
 }
@@ -282,9 +381,17 @@ private fun MessageBubble(message: SmsItem) {
             val textColor = if (incoming) ElementTheme.colors.textPrimary else ElementTheme.colors.textOnSolidPrimary
             Text(text = message.body, style = ElementTheme.typography.fontBodyLgRegular, color = textColor)
             Text(
-                text = formatDate(message.date),
+                text = when (message.status) {
+                    SmsStatus.SENDING -> "Envoi…"
+                    SmsStatus.FAILED -> "Échec de l'envoi"
+                    else -> formatDate(message.date)
+                },
                 style = ElementTheme.typography.fontBodySmRegular,
-                color = if (incoming) ElementTheme.colors.textSecondary else ElementTheme.colors.textOnSolidPrimary,
+                color = when {
+                    message.status == SmsStatus.FAILED -> ElementTheme.colors.textCriticalPrimary
+                    incoming -> ElementTheme.colors.textSecondary
+                    else -> ElementTheme.colors.textOnSolidPrimary
+                },
                 modifier = Modifier.align(Alignment.End),
             )
         }
