@@ -64,9 +64,14 @@ jobs:
           TAG="pigeon-${GITHUB_RUN_NUMBER}"
           # Version pour processeurs ARM 64 bits (quasiment tous les téléphones récents) : 4 fois plus légère que la version universelle.
           cp app/build/outputs/apk/gplay/debug/app-gplay-arm64-v8a-debug.apk "pigeon-${GITHUB_RUN_NUMBER}.apk"
-          gh release create "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Pigeon ${GITHUB_RUN_NUMBER}" \
-            --notes "$(git log -1 --format='%s%n%n%b' "$GITHUB_SHA")" \
-            --latest
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Run relancé : la release existe déjà, on remplace seulement son APK.
+            gh release upload "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Pigeon ${GITHUB_RUN_NUMBER}" \
+              --notes "$(git log -1 --format='%s%n%n%b' "$GITHUB_SHA")" \
+              --latest
+          fi

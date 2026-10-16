@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
 import timber.log.Timber
+import kotlin.concurrent.thread
 
 /**
  * Reçoit les SMS entrants quand Pigeon est l'app SMS par défaut, les enregistre et affiche une notification.
@@ -30,23 +31,37 @@ class SmsDeliverReceiver : BroadcastReceiver() {
         val address = first.displayOriginatingAddress.orEmpty()
         val body = parts.joinToString(separator = "") { it.displayMessageBody.orEmpty() }
 
+        val subscriptionId = subscriptionId(intent)
+        // Accès à la base et aux contacts hors du fil principal.
+        val pending = goAsync()
+        thread(name = "pigeon-sms") {
+            try {
+                save(context, address, body, first.timestampMillis, first.serviceCenterAddress, subscriptionId, parts.size)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    private fun save(context: Context, address: String, body: String, sentAt: Long, serviceCenter: String?, subscriptionId: Int?, partCount: Int) {
         val values = ContentValues().apply {
             put(Telephony.Sms.ADDRESS, address)
             put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
-            put(Telephony.Sms.DATE_SENT, first.timestampMillis)
-            put(Telephony.Sms.SERVICE_CENTER, first.serviceCenterAddress)
+            put(Telephony.Sms.DATE_SENT, sentAt)
+            put(Telephony.Sms.SERVICE_CENTER, serviceCenter)
             put(Telephony.Sms.READ, 0)
             put(Telephony.Sms.SEEN, 0)
             put(Telephony.Sms.TYPE, Telephony.Sms.MESSAGE_TYPE_INBOX)
-            subscriptionId(intent)?.let { put(Telephony.Sms.SUBSCRIPTION_ID, it) }
+            subscriptionId?.let { put(Telephony.Sms.SUBSCRIPTION_ID, it) }
         }
 
         try {
             val uri = context.contentResolver.insert(Telephony.Sms.Inbox.CONTENT_URI, values)
             // Ne jamais journaliser le contenu ni le numéro (données personnelles).
-            Timber.i("SMS reçu enregistré (%d morceau(x)) : %s", parts.size, uri)
+            Timber.i("SMS reçu enregistré (%d morceau(x)) : %s", partCount, uri)
         } catch (e: Exception) {
+            // La notification est quand même affichée : c'est alors la seule trace du SMS.
             Timber.e(e, "Impossible d'enregistrer le SMS reçu")
         }
 

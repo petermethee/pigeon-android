@@ -15,6 +15,7 @@ import androidx.core.content.FileProvider
 import timber.log.Timber
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -27,7 +28,11 @@ import kotlin.concurrent.thread
 object MmsDownloader {
     /** Télécharge le MMS annoncé par l'avis [pending] (aussi pour réessayer après un échec). */
     fun download(context: Context, pending: PendingMms) {
-        if (pending.id >= 0) MmsStore.setPendingState(context, pending.id, downloading = true)
+        if (pending.id >= 0) {
+            // Un seul téléchargement à la fois par avis (toucher la bulle pendant un téléchargement ne le relance pas).
+            if (!activeDownloads.add(pending.id)) return
+            MmsStore.setPendingState(context, pending.id, downloading = true)
+        }
         val file = newTempFile(context)
         try {
             val uri = shareTempFile(context, file)
@@ -37,8 +42,23 @@ object MmsDownloader {
         } catch (e: Exception) {
             Timber.e(e, "Téléchargement du MMS impossible")
             file.delete()
-            if (pending.id >= 0) MmsStore.setPendingState(context, pending.id, downloading = false)
+            if (pending.id >= 0) {
+                activeDownloads.remove(pending.id)
+                MmsStore.setPendingState(context, pending.id, downloading = false)
+            }
         }
+    }
+
+    /**
+     * Avis dont le téléchargement est en cours dans ce processus. Un avis marqué "en cours" dans la base mais absent
+     * d'ici a été interrompu (redémarrage du téléphone…) : il est traité comme un échec, qu'on peut relancer.
+     */
+    private val activeDownloads: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+
+    fun isDownloading(pendingId: Long): Boolean = pendingId in activeDownloads
+
+    internal fun downloadFinished(pendingId: Long) {
+        activeDownloads.remove(pendingId)
     }
 
     /** Relance le téléchargement de l'avis en attente n° [pendingId] (bouton "Réessayer" de la conversation). */
@@ -108,16 +128,18 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
             subscriptionId = intent.getIntExtra(EXTRA_SUBSCRIPTION, -1).takeIf { it >= 0 },
             failed = false,
         )
-        val ok = resultCode == Activity.RESULT_OK
+        // Lu avant goAsync(), qui le remet à zéro.
+        val code = resultCode
         // Lecture et enregistrement hors du fil principal.
         val async = goAsync()
         thread(name = "pigeon-mms") {
             try {
-                if (ok) {
+                MmsDownloader.downloadFinished(pending.id)
+                if (code == Activity.RESULT_OK) {
                     save(context, file.readBytes(), pending)
                 } else {
                     // Souvent : données mobiles indisponibles, ou MMS expiré chez l'opérateur.
-                    Timber.w("Échec du téléchargement du MMS (code %d)", resultCode)
+                    Timber.w("Échec du téléchargement du MMS (code %d)", code)
                     failed(context, pending)
                 }
             } catch (e: Exception) {
@@ -137,12 +159,19 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
             failed(context, pending)
             return
         }
+        // Déjà enregistré (deux téléchargements du même avis) : on retire seulement l'avis.
+        val location = pending.location.ifEmpty { null }
+        if (location != null && MmsStore.find(context, location) == KnownMms.Received) {
+            Timber.i("MMS déjà enregistré : doublon ignoré")
+            if (pending.id >= 0) MmsStore.deletePending(context, pending.id)
+            return
+        }
         val saved = MmsStore.saveIncoming(
             context = context,
             pdu = pdu,
             size = bytes.size,
             subscriptionId = pending.subscriptionId,
-            location = pending.location.ifEmpty { null },
+            location = location,
             pendingId = pending.id.takeIf { it >= 0 },
         )
         if (saved == null) {

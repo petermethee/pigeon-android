@@ -68,8 +68,9 @@ class SmsActivity : ComponentActivity() {
     private fun Intent.toTarget(): SmsTarget? {
         val threadId = getLongExtra(EXTRA_THREAD_ID, -1).takeIf { it >= 0 }
         val address = getStringExtra(EXTRA_ADDRESS)
-        if (threadId == null && address == null) return null
-        return SmsTarget(threadId = threadId, address = address, draft = getStringExtra(EXTRA_DRAFT))
+        val draft = getStringExtra(EXTRA_DRAFT)
+        if (threadId == null && address == null && draft == null) return null
+        return SmsTarget(threadId = threadId, address = address, draft = draft)
     }
 
     companion object {

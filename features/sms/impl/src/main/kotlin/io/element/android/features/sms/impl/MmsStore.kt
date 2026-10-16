@@ -133,7 +133,7 @@ object MmsStore {
                         location = c.getString(2).orEmpty(),
                         transactionId = c.getString(3),
                         subscriptionId = if (c.isNull(4)) null else c.getInt(4).takeIf { it >= 0 },
-                        failed = c.getInt(5) != STATE_DOWNLOADING,
+                        failed = c.getInt(5) != STATE_DOWNLOADING || !MmsDownloader.isDownloading(c.getLong(0)),
                     )
                     onRow(pending, c.getInt(6))
                 }
@@ -219,13 +219,7 @@ object MmsStore {
         pdu.cc.forEach { saveAddress(context, messageId, it, ADDRESS_CC) }
 
         // L'avis en attente est remplacé par le MMS.
-        pendingId?.let { id ->
-            try {
-                resolver.delete(ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, id), null, null)
-            } catch (e: Exception) {
-                Timber.w(e, "Impossible de retirer l'avis de MMS")
-            }
-        }
+        pendingId?.let { deletePending(context, it) }
 
         // Ne jamais journaliser le contenu ni les numéros (données personnelles).
         Timber.i("MMS reçu enregistré (%d pièce(s)) : %s", pdu.parts.size, messageUri)
@@ -236,6 +230,14 @@ object MmsStore {
             SavedMms(threadId, SmsRepository.conversationTitle(context, recipients), context.getString(R.string.screen_sms_group_preview, sender, preview))
         } else {
             SavedMms(threadId, sender, preview)
+        }
+    }
+
+    fun deletePending(context: Context, id: Long) {
+        try {
+            context.contentResolver.delete(ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, id), null, null)
+        } catch (e: Exception) {
+            Timber.w(e, "Impossible de retirer l'avis de MMS")
         }
     }
 
@@ -256,12 +258,14 @@ object MmsStore {
     /**
      * Membres de la conversation : l'expéditeur et les autres destinataires, sans soi-même.
      *
-     * Pour un MMS à une seule personne, le seul destinataire est soi : on en profite pour retenir son numéro,
-     * qui permet ensuite de se retirer des MMS de groupe.
+     * Pour un MMS à une seule personne, le seul destinataire est normalement soi : s'il n'est pas encore connu
+     * (ni sur la carte SIM, ni saisi par l'utilisateur), on retient ce numéro pour se retirer des MMS de groupe.
+     * Il n'est pas retenu si un numéro est déjà connu, pour ne pas ajouter par erreur celui d'un contact
+     * (MMS reçu en copie cachée…).
      */
     private fun conversationMembers(context: Context, from: String, recipients: List<String>, subscriptionId: Int?): List<String> {
         val members = if (recipients.size <= 1) {
-            recipients.firstOrNull()?.let { SelfNumbers.remember(context, it) }
+            recipients.firstOrNull()?.let { if (SelfNumbers.get(context, subscriptionId).isEmpty()) SelfNumbers.remember(context, it) }
             listOf(from)
         } else {
             val self = SelfNumbers.get(context, subscriptionId)

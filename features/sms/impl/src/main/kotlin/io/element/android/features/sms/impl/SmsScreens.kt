@@ -80,6 +80,7 @@ import io.element.android.libraries.designsystem.components.button.BackButton
 import io.element.android.libraries.designsystem.components.dialogs.TextFieldDialog
 import io.element.android.libraries.designsystem.preview.ElementPreview
 import io.element.android.libraries.designsystem.preview.PreviewsDayNight
+import io.element.android.libraries.designsystem.theme.aliasScreenTitle
 import io.element.android.libraries.designsystem.theme.components.FloatingActionButton
 import io.element.android.libraries.designsystem.theme.components.HorizontalDivider
 import io.element.android.libraries.designsystem.theme.components.Icon
@@ -161,9 +162,17 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
     // Augmente à chaque changement dans la base SMS/MMS (nouveau message…) ou à l'accord des contacts : déclenche un rechargement.
     val version = rememberSmsChanges(context) + contactsGranted
 
+    // Texte proposé par une autre app sans destinataire : on demande le numéro avant d'ouvrir la conversation.
+    var draftWithoutRecipient by rememberSaveable { mutableStateOf<String?>(null) }
+
     // Ouvre une conversation par son fil (notification) ou un numéro ("Envoyer un SMS" depuis une autre app, bouton +).
     val scope = rememberCoroutineScope()
     fun open(threadId: Long?, address: String?, draft: String? = null) {
+        if (threadId == null && address == null) {
+            openThread = null
+            draftWithoutRecipient = draft
+            return
+        }
         scope.launch {
             openThread = withContext(Dispatchers.IO) {
                 val info = when {
@@ -183,8 +192,13 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
     if (thread == null) {
         ConversationListScreen(
             version = version,
+            askRecipient = draftWithoutRecipient != null,
             onOpen = { openThread = OpenThread(SmsThreadInfo(it.threadId, it.addresses, it.displayName)) },
-            onNewConversation = { open(threadId = null, address = it) },
+            onNewConversation = { number ->
+                open(threadId = null, address = number, draft = draftWithoutRecipient)
+                draftWithoutRecipient = null
+            },
+            onNewConversationDismissed = { draftWithoutRecipient = null },
         )
     } else {
         BackHandler { openThread = null }
@@ -240,23 +254,44 @@ private fun SelfNumberDialog(onSubmit: (String) -> Unit, onDismiss: () -> Unit) 
 // ── Liste des conversations ─────────────────────────────────────────────────────
 
 @Composable
-private fun ConversationListScreen(version: Int, onOpen: (SmsConversation) -> Unit, onNewConversation: (String) -> Unit) {
+private fun ConversationListScreen(
+    version: Int,
+    askRecipient: Boolean,
+    onOpen: (SmsConversation) -> Unit,
+    onNewConversation: (String) -> Unit,
+    onNewConversationDismissed: () -> Unit,
+) {
     val context = LocalContext.current
     var conversations by remember { mutableStateOf<List<SmsConversation>?>(null) }
     LaunchedEffect(version) {
         conversations = withContext(Dispatchers.IO) { SmsRepository.loadConversations(context) }
     }
-    ConversationListView(conversations = conversations, onOpen = onOpen, onNewConversation = onNewConversation)
+    ConversationListView(
+        conversations = conversations,
+        askRecipient = askRecipient,
+        onOpen = onOpen,
+        onNewConversation = onNewConversation,
+        onNewConversationDismissed = onNewConversationDismissed,
+    )
 }
 
-/** Liste des conversations ; [conversations] vaut null pendant le chargement. */
+/**
+ * Liste des conversations ; [conversations] vaut null pendant le chargement.
+ *
+ * @param askRecipient ouvre directement la saisie du numéro (texte proposé par une autre app sans destinataire).
+ */
 @Composable
 private fun ConversationListView(
     conversations: List<SmsConversation>?,
+    askRecipient: Boolean,
     onOpen: (SmsConversation) -> Unit,
     onNewConversation: (String) -> Unit,
+    onNewConversationDismissed: () -> Unit,
 ) {
     var showNewConversation by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(askRecipient) {
+        if (askRecipient) showNewConversation = true
+    }
     Scaffold(
         topBar = { TopAppBar(titleStr = stringResource(R.string.screen_sms_list_title)) },
         floatingActionButton = {
@@ -284,7 +319,10 @@ private fun ConversationListView(
                 showNewConversation = false
                 onNewConversation(number.trim())
             },
-            onDismissRequest = { showNewConversation = false },
+            onDismissRequest = {
+                showNewConversation = false
+                onNewConversationDismissed()
+            },
             value = null,
             placeholder = stringResource(R.string.screen_sms_new_conversation_number),
             validation = { !it.isNullOrBlank() },
@@ -359,9 +397,10 @@ private fun ThreadScreen(thread: OpenThread, version: Int, resumed: Boolean, onB
     var messages by remember(info.threadId) { mutableStateOf<List<SmsItem>>(emptyList()) }
     var text by rememberSaveable(info.threadId) { mutableStateOf(thread.draft.orEmpty()) }
 
-    LaunchedEffect(info.threadId, version) {
+    LaunchedEffect(info.threadId, version, resumed) {
         messages = withContext(Dispatchers.IO) {
-            SmsRepository.markThreadRead(context, info.threadId)
+            // Lus seulement s'ils sont vraiment à l'écran (pas quand l'app est en arrière-plan).
+            if (resumed) SmsRepository.markThreadRead(context, info.threadId)
             SmsRepository.loadMessages(context, info.threadId, info.isGroup)
         }
     }
@@ -512,7 +551,7 @@ private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetry
                     shape = RoundedCornerShape(16.dp),
                 )
                 .clip(RoundedCornerShape(16.dp))
-                .then(if (pending != null) Modifier.clickable { onRetryMms(pending.id) } else Modifier)
+                .then(if (pending != null && !pending.downloading) Modifier.clickable { onRetryMms(pending.id) } else Modifier)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             val textColor = if (incoming) ElementTheme.colors.textPrimary else ElementTheme.colors.textOnSolidPrimary
@@ -622,7 +661,7 @@ private fun formatDate(timestamp: Long): String {
 private const val PREVIEW_NOW = 1_760_000_000_000L
 
 internal class ConversationListPreviewParam : PreviewParameterProvider<List<SmsConversation>?> {
-    override val values = sequenceOf(
+    override val values: Sequence<List<SmsConversation>?> = sequenceOf(
         listOf(
             SmsConversation(1, listOf("+33611111111"), "Alice", "À demain !", lastIsOutgoing = false, date = PREVIEW_NOW, unreadCount = 2),
             SmsConversation(2, listOf("+33622222222"), "Bob", "Ok, merci", lastIsOutgoing = true, date = PREVIEW_NOW - 86_400_000, unreadCount = 0),
@@ -636,11 +675,11 @@ internal class ConversationListPreviewParam : PreviewParameterProvider<List<SmsC
 @PreviewsDayNight
 @Composable
 internal fun ConversationListViewPreview(@PreviewParameter(ConversationListPreviewParam::class) conversations: List<SmsConversation>?) = ElementPreview {
-    ConversationListView(conversations = conversations, onOpen = {}, onNewConversation = {})
+    ConversationListView(conversations = conversations, askRecipient = false, onOpen = {}, onNewConversation = {}, onNewConversationDismissed = {})
 }
 
 internal class ThreadPreviewParam : PreviewParameterProvider<Pair<SmsThreadInfo, List<SmsItem>>> {
-    override val values = sequenceOf(
+    override val values: Sequence<Pair<SmsThreadInfo, List<SmsItem>>> = sequenceOf(
         SmsThreadInfo(1, listOf("+33611111111"), "Alice") to listOf(
             SmsItem("sms-1", "Salut, tu viens ce soir ?", PREVIEW_NOW - 60_000, SmsStatus.RECEIVED),
             SmsItem("sms-2", "Oui, vers 20 h", PREVIEW_NOW - 30_000, SmsStatus.SENT),

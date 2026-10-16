@@ -163,7 +163,7 @@ object SmsRepository {
                 status = row.status,
                 sender = if (isGroup && row.isIncoming) mmsSender(context, row.id)?.let(names::lookup) else null,
                 attachments = parts.attachments,
-                pendingMms = if (row.isPending) PendingMmsState(row.id, downloading = row.downloadState == MmsStore.STATE_DOWNLOADING) else null,
+                pendingMms = if (row.isPending) PendingMmsState(row.id, downloading = row.downloadState == MmsStore.STATE_DOWNLOADING && MmsDownloader.isDownloading(row.id)) else null,
             )
         }
         return items.sortedBy { it.date }
