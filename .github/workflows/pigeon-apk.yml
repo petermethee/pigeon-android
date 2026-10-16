@@ -62,7 +62,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="pigeon-${GITHUB_RUN_NUMBER}"
-          cp app/build/outputs/apk/gplay/debug/app-gplay-universal-debug.apk "pigeon-${GITHUB_RUN_NUMBER}.apk"
+          # Version pour processeurs ARM 64 bits (quasiment tous les téléphones récents) : 4 fois plus légère que la version universelle.
+          cp app/build/outputs/apk/gplay/debug/app-gplay-arm64-v8a-debug.apk "pigeon-${GITHUB_RUN_NUMBER}.apk"
           gh release create "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
