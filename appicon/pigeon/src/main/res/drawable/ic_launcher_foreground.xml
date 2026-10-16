@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<!-- Pigeon de profil, réduit à 80 % pour rester dans la zone visible des icônes adaptatives. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.8"
+        android:scaleY="0.8"
+        android:translateX="11.6"
+        android:translateY="8.4">
+        <!-- queue -->
+        <path android:fillColor="#AEBBCF" android:pathData="M36,62 L22,70 L25,74 L40,70 Z" />
+        <!-- corps -->
+        <path android:fillColor="#E9EEF5" android:pathData="M33,66 C38,53 50,47 62,48 C69,49 75,54 75,61 C75,71 65,77 53,77 C45,77 38,73 33,66 Z" />
+        <!-- cou -->
+        <path android:fillColor="#E9EEF5" android:pathData="M60,50 C61,44 63,39 66,35 L76,38 C76,45 76,51 74,57 Z" />
+        <!-- reflets du cou -->
+        <path android:fillColor="#7FB7A4" android:pathData="M62,48 C63,44 64,41 66,39 L75,42 C75,46 75,50 74,54 C70,51 66,49 62,48 Z" />
+        <!-- tête -->
+        <path android:fillColor="#C5CEDB" android:pathData="M62,36 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0 Z" />
+        <!-- bec -->
+        <path android:fillColor="#F4A259" android:pathData="M77,35 L85,37.5 L77,40 Z" />
+        <!-- œil -->
+        <path android:fillColor="#1B263B" android:pathData="M70.2,34.5 a1.8,1.8 0 1,0 3.6,0 a1.8,1.8 0 1,0 -3.6,0 Z" />
+        <!-- aile -->
+        <path android:fillColor="#AEBBCF" android:pathData="M38,64 C44,55 55,53 65,57 C59,64 48,68 38,64 Z" />
+        <!-- pattes -->
+        <path
+            android:pathData="M50,76 L48,83 M57,76 L57,83"
+            android:strokeColor="#F4A259"
+            android:strokeLineCap="round"
+            android:strokeWidth="2.2" />
+    </group>
+</vector>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<!-- Android 7 (API 24-25) : pas d'icônes adaptatives, on superpose fond et pigeon. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_background" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

@@ -274,7 +274,7 @@ dependencies {
         implementation(projects.appicon.enterprise)
     } else {
         implementation(projects.features.enterprise.implFoss)
-        implementation(projects.appicon.element)
+        implementation(projects.appicon.pigeon)
     }
     allFeaturesImpl(project)
     implementation(projects.features.migration.api)
