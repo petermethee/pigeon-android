@@ -9,6 +9,10 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.database.ContentObserver
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Telephony
@@ -17,6 +21,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -59,25 +64,34 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.element.android.compound.theme.ElementTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 
-/** Conversation ouverte : son fil, son correspondant et un brouillon éventuel. */
-private data class OpenThread(val threadId: Long, val address: String, val title: String, val draft: String? = null)
+/** Conversation ouverte, avec un brouillon éventuel. */
+private data class OpenThread(val info: SmsThreadInfo, val draft: String? = null)
 
 @Composable
 internal fun SmsApp(target: SmsTarget?) {
@@ -101,30 +115,30 @@ internal fun SmsApp(target: SmsTarget?) {
     // Augmente à chaque changement dans la base SMS (nouveau SMS…) ou à l'accord des contacts : déclenche un rechargement.
     val version = rememberSmsChanges(context) + contactsGranted
 
-    // Ouvre la conversation avec un numéro (notification, "Envoyer un SMS" depuis une autre app, bouton +).
+    // Ouvre une conversation par son fil (notification) ou un numéro ("Envoyer un SMS" depuis une autre app, bouton +).
     val scope = rememberCoroutineScope()
-    fun openAddress(address: String, draft: String? = null) {
+    fun open(threadId: Long?, address: String?, draft: String? = null) {
         scope.launch {
             openThread = withContext(Dispatchers.IO) {
-                OpenThread(
-                    threadId = SmsRepository.threadIdFor(context, address),
-                    address = address,
-                    title = SmsRepository.displayName(context, address),
-                    draft = draft,
-                )
+                val info = when {
+                    threadId != null -> SmsRepository.threadInfo(context, threadId)
+                    address != null -> SmsRepository.threadInfo(context, address)
+                    else -> null
+                }
+                info?.let { OpenThread(it, draft) }
             }
         }
     }
     LaunchedEffect(target) {
-        target?.let { openAddress(it.address, it.draft) }
+        target?.let { open(it.threadId, it.address, it.draft) }
     }
 
     val thread = openThread
     if (thread == null) {
         ConversationListScreen(
             version = version,
-            onOpen = { openThread = OpenThread(it.threadId, it.address, it.displayName) },
-            onNewConversation = { openAddress(it) },
+            onOpen = { openThread = OpenThread(SmsThreadInfo(it.threadId, it.addresses, it.displayName)) },
+            onNewConversation = { open(threadId = null, address = it) },
         )
     } else {
         BackHandler { openThread = null }
@@ -132,7 +146,7 @@ internal fun SmsApp(target: SmsTarget?) {
     }
 }
 
-/** Compteur qui augmente à chaque modification de la base SMS. */
+/** Compteur qui augmente à chaque modification de la base SMS/MMS. */
 @Composable
 private fun rememberSmsChanges(context: Context): Int {
     var version by remember { mutableIntStateOf(0) }
@@ -143,6 +157,8 @@ private fun rememberSmsChanges(context: Context): Int {
             }
         }
         context.contentResolver.registerContentObserver(Telephony.Sms.CONTENT_URI, true, observer)
+        context.contentResolver.registerContentObserver(Telephony.Mms.CONTENT_URI, true, observer)
+        context.contentResolver.registerContentObserver(Telephony.MmsSms.CONTENT_URI, true, observer)
         onDispose { context.contentResolver.unregisterContentObserver(observer) }
     }
     return version
@@ -279,16 +295,18 @@ private fun ConversationRow(conversation: SmsConversation, onClick: () -> Unit) 
 private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var messages by remember(thread.threadId) { mutableStateOf<List<SmsItem>>(emptyList()) }
-    var text by rememberSaveable(thread.threadId) { mutableStateOf(thread.draft.orEmpty()) }
+    val info = thread.info
+    var messages by remember(info.threadId) { mutableStateOf<List<SmsItem>>(emptyList()) }
+    var text by rememberSaveable(info.threadId) { mutableStateOf(thread.draft.orEmpty()) }
+    var fullScreenImage by remember { mutableStateOf<Uri?>(null) }
 
-    LaunchedEffect(thread.threadId, version) {
+    LaunchedEffect(info.threadId, version) {
         messages = withContext(Dispatchers.IO) {
-            SmsRepository.markThreadRead(context, thread.threadId)
-            SmsRepository.loadMessages(context, thread.threadId)
+            SmsRepository.markThreadRead(context, info.threadId)
+            SmsRepository.loadMessages(context, info.threadId, info.isGroup)
         }
         // La conversation est lue : on retire sa notification.
-        NotificationManagerCompat.from(context).cancel(thread.address.hashCode())
+        NotificationManagerCompat.from(context).cancel(SmsNotifier.notificationId(info.threadId))
     }
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
@@ -300,7 +318,7 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
         if (body.isEmpty()) return
         text = ""
         scope.launch {
-            val started = withContext(Dispatchers.IO) { SmsSender.send(context, thread.address, body) }
+            val started = withContext(Dispatchers.IO) { SmsSender.send(context, info.addresses.first(), body) }
             if (!started) {
                 Toast.makeText(context, "Envoi impossible : Pigeon doit être l'app SMS par défaut.", Toast.LENGTH_LONG).show()
             }
@@ -310,7 +328,7 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(thread.title, style = ElementTheme.typography.fontHeadingSmMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = { Text(info.title, style = ElementTheme.typography.fontHeadingSmMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
@@ -319,7 +337,12 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
             )
         },
         bottomBar = {
-            Composer(text = text, onTextChange = { text = it }, onSend = ::send)
+            when {
+                // L'envoi aux groupes passe par un MMS : prochaine étape.
+                info.isGroup -> BottomNotice("Répondre à un groupe n'est pas encore possible.")
+                info.addresses.isEmpty() -> BottomNotice("Correspondant inconnu.")
+                else -> Composer(text = text, onTextChange = { text = it }, onSend = ::send)
+            }
         },
         containerColor = ElementTheme.colors.bgCanvasDefault,
     ) { padding ->
@@ -334,9 +357,36 @@ private fun ThreadScreen(thread: OpenThread, version: Int, onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxSize(),
         ) {
-            items(messages, key = { it.id }) { MessageBubble(it) }
+            items(messages, key = { it.key }) { MessageBubble(it, onImageClick = { uri -> fullScreenImage = uri }) }
         }
     }
+
+    fullScreenImage?.let { uri ->
+        Dialog(onDismissRequest = { fullScreenImage = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable { fullScreenImage = null },
+                contentAlignment = Alignment.Center,
+            ) {
+                MmsImage(uri, maxSize = 2048, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomNotice(text: String) {
+    Text(
+        text = text,
+        style = ElementTheme.typography.fontBodyMdRegular,
+        color = ElementTheme.colors.textSecondary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(16.dp),
+    )
 }
 
 /** Zone de saisie, qui remonte au-dessus du clavier. */
@@ -366,7 +416,7 @@ private fun Composer(text: String, onTextChange: (String) -> Unit, onSend: () ->
 }
 
 @Composable
-private fun MessageBubble(message: SmsItem) {
+private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit) {
     val incoming = message.isIncoming
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = if (incoming) Alignment.CenterStart else Alignment.CenterEnd) {
         Column(
@@ -379,7 +429,26 @@ private fun MessageBubble(message: SmsItem) {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             val textColor = if (incoming) ElementTheme.colors.textPrimary else ElementTheme.colors.textOnSolidPrimary
-            Text(text = message.body, style = ElementTheme.typography.fontBodyLgRegular, color = textColor)
+            message.sender?.let {
+                Text(text = it, style = ElementTheme.typography.fontBodySmMedium, color = ElementTheme.colors.textActionAccent)
+            }
+            for (attachment in message.attachments) {
+                if (attachment.isImage) {
+                    MmsImage(
+                        uri = attachment.uri,
+                        maxSize = 1080,
+                        modifier = Modifier
+                            .padding(vertical = 4.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onImageClick(attachment.uri) },
+                    )
+                } else {
+                    Text(text = "📎 Pièce jointe (${attachment.contentType})", style = ElementTheme.typography.fontBodyMdRegular, color = textColor)
+                }
+            }
+            if (message.body.isNotBlank()) {
+                Text(text = message.body, style = ElementTheme.typography.fontBodyLgRegular, color = textColor)
+            }
             Text(
                 text = when (message.status) {
                     SmsStatus.SENDING -> "Envoi…"
@@ -396,6 +465,42 @@ private fun MessageBubble(message: SmsItem) {
             )
         }
     }
+}
+
+/** Photo d'un MMS, réduite à [maxSize] pixels au plus pour ne pas saturer la mémoire. */
+@Composable
+private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, uri, maxSize) {
+        value = withContext(Dispatchers.IO) { decodeImage(context, uri, maxSize) }
+    }
+    val image = bitmap
+    if (image == null) {
+        Box(modifier = modifier.size(width = 220.dp, height = 160.dp).background(ElementTheme.colors.bgSubtlePrimary))
+    } else {
+        Image(bitmap = image, contentDescription = "Photo", contentScale = ContentScale.FillWidth, modifier = modifier)
+    }
+}
+
+private fun decodeImage(context: Context, uri: Uri, maxSize: Int): ImageBitmap? = try {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        // Tient compte de l'orientation de la photo.
+        val source = ImageDecoder.createSource(context.contentResolver, uri)
+        ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+            val largest = maxOf(info.size.width, info.size.height)
+            if (largest > maxSize) decoder.setTargetSampleSize(largest / maxSize)
+        }.asImageBitmap()
+    } else {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var sampleSize = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sampleSize * 2) >= maxSize) sampleSize *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }?.asImageBitmap()
+    }
+} catch (e: Exception) {
+    Timber.w(e, "Photo du MMS illisible")
+    null
 }
 
 @Composable

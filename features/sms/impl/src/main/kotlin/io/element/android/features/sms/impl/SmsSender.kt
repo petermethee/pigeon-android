@@ -48,12 +48,12 @@ object SmsSender {
 
         // 2. L'envoyer. Un SMS long est découpé en plusieurs morceaux ; seul le dernier donne le résultat.
         return try {
-            val smsManager = smsManager(context)
-            val parts = smsManager.divideMessage(body)
+            val manager = smsManager(context)
+            val parts = manager.divideMessage(body)
             val sentIntents = ArrayList<PendingIntent?>(parts.size)
             repeat(parts.size - 1) { sentIntents += null }
             sentIntents += SmsSentReceiver.pendingIntent(context, uri)
-            smsManager.sendMultipartTextMessage(address, null, parts, sentIntents, null)
+            manager.sendMultipartTextMessage(address, null, parts, sentIntents, null)
             Timber.i("SMS en cours d'envoi (%d morceau(x)) : %s", parts.size, uri)
             true
         } catch (e: Exception) {
@@ -64,14 +64,17 @@ object SmsSender {
         }
     }
 
-    private fun smsManager(context: Context): SmsManager =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            context.getSystemService(SmsManager::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            SmsManager.getDefault()
-        }
 }
+
+/** Envoi et téléchargement par la carte SIM [subscriptionId], ou celle choisie par défaut. */
+internal fun smsManager(context: Context, subscriptionId: Int? = null): SmsManager =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val manager = context.getSystemService(SmsManager::class.java)
+        if (subscriptionId != null) manager.createForSubscriptionId(subscriptionId) else manager
+    } else {
+        @Suppress("DEPRECATION")
+        if (subscriptionId != null) SmsManager.getSmsManagerForSubscriptionId(subscriptionId) else SmsManager.getDefault()
+    }
 
 /** Reçoit le résultat de l'envoi d'un SMS et met à jour son état ("envoyé" ou "échec"). */
 class SmsSentReceiver : BroadcastReceiver() {

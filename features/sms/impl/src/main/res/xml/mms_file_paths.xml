@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<!-- Dossier des MMS en cours de téléchargement, partagé avec le service MMS d'Android. -->
+<paths>
+    <cache-path name="mms" path="mms/" />
+</paths>

@@ -66,6 +66,22 @@
             </intent-filter>
         </receiver>
 
+        <!-- Fin du téléchargement d'un MMS. -->
+        <receiver
+            android:name="io.element.android.features.sms.impl.MmsDownloadedReceiver"
+            android:exported="false" />
+
+        <!-- Fichiers temporaires des MMS, que le service MMS d'Android remplit au téléchargement. -->
+        <provider
+            android:name="io.element.android.features.sms.impl.MmsFileProvider"
+            android:authorities="${applicationId}.mms"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/mms_file_paths" />
+        </provider>
+
         <!-- Résultat de l'envoi d'un SMS (envoyé ou échec). -->
         <receiver
             android:name="io.element.android.features.sms.impl.SmsSentReceiver"

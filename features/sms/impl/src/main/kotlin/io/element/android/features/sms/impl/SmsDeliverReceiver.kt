@@ -50,13 +50,12 @@ class SmsDeliverReceiver : BroadcastReceiver() {
             Timber.e(e, "Impossible d'enregistrer le SMS reçu")
         }
 
-        SmsNotifier.notifyIncomingSms(context, address, body)
-    }
-
-    /** Carte SIM ayant reçu le SMS (utile avec deux SIM). */
-    private fun subscriptionId(intent: Intent): Int? {
-        // "android.telephony.extra.SUBSCRIPTION_INDEX" depuis Android 11, "subscription" avant.
-        val id = intent.getIntExtra("android.telephony.extra.SUBSCRIPTION_INDEX", intent.getIntExtra("subscription", -1))
-        return id.takeIf { it >= 0 }
+        val threadId = try {
+            SmsRepository.threadIdFor(context, address)
+        } catch (e: Exception) {
+            Timber.e(e, "Conversation du SMS introuvable")
+            return
+        }
+        SmsNotifier.notifyIncoming(context, threadId, SmsRepository.displayName(context, address), body)
     }
 }

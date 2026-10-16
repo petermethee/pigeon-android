@@ -9,44 +9,59 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.Cursor
 import android.net.Uri
 import android.provider.ContactsContract
 import android.provider.Telephony
 import androidx.core.content.ContextCompat
 import timber.log.Timber
 
-/** Une conversation SMS : un fil avec un correspondant. */
+/** Une conversation : un fil avec un correspondant, ou plusieurs pour un groupe (MMS). */
 data class SmsConversation(
     val threadId: Long,
-    val address: String,
+    val addresses: List<String>,
     val displayName: String,
     val snippet: String,
-    /** Le dernier SMS est un SMS envoyé (affiché "Vous : …"). */
+    /** Le dernier message est un message envoyé (affiché "Vous : …"). */
     val lastIsOutgoing: Boolean,
     val date: Long,
     val unreadCount: Int,
 )
 
-/** État d'un SMS. */
+/** Une conversation ouverte : son fil, ses correspondants et son titre. */
+data class SmsThreadInfo(val threadId: Long, val addresses: List<String>, val title: String) {
+    val isGroup: Boolean get() = addresses.size > 1
+}
+
+/** État d'un message. */
 enum class SmsStatus { RECEIVED, SENDING, SENT, FAILED }
 
-/** Un SMS dans une conversation. */
+/** Un SMS ou un MMS dans une conversation. */
 data class SmsItem(
-    val id: Long,
+    /** Unique dans la conversation ("sms-12", "mms-5") : SMS et MMS ont chacun leur numérotation. */
+    val key: String,
     val body: String,
     val date: Long,
     val status: SmsStatus,
+    /** Nom de l'expéditeur, pour un message reçu dans un groupe. */
+    val sender: String? = null,
+    val attachments: List<MmsAttachment> = emptyList(),
 ) {
     val isIncoming: Boolean get() = status == SmsStatus.RECEIVED
 }
 
+/** Pièce jointe d'un MMS (photo, vidéo…), lisible à l'adresse [uri]. */
+data class MmsAttachment(val uri: Uri, val contentType: String) {
+    val isImage: Boolean get() = contentType.startsWith("image/")
+}
+
 /**
- * Lecture des SMS dans la base SMS du téléphone (le "Telephony provider").
+ * Lecture des SMS et MMS dans la base du téléphone (le "Telephony provider").
  *
  * Toutes ces fonctions accèdent au disque : à appeler hors du fil principal.
  */
 object SmsRepository {
-    private val PROJECTION = arrayOf(
+    private val SMS_PROJECTION = arrayOf(
         Telephony.Sms._ID,
         Telephony.Sms.THREAD_ID,
         Telephony.Sms.ADDRESS,
@@ -55,18 +70,33 @@ object SmsRepository {
         Telephony.Sms.TYPE,
         Telephony.Sms.READ,
     )
+    private val MMS_PROJECTION = arrayOf(
+        Telephony.Mms._ID,
+        Telephony.Mms.THREAD_ID,
+        Telephony.Mms.DATE,
+        Telephony.Mms.MESSAGE_BOX,
+        Telephony.Mms.READ,
+        Telephony.Mms.SUBJECT,
+    )
+
+    // Les avis de MMS pas encore téléchargés (laissés par une autre app) et les brouillons ne sont pas affichés.
+    private const val MMS_SELECTION = "${Telephony.Mms.MESSAGE_TYPE} != 130 AND ${Telephony.Mms.MESSAGE_BOX} != ${Telephony.Mms.MESSAGE_BOX_DRAFTS}"
+
+    private val THREADS_URI: Uri = Uri.parse("content://mms-sms/conversations?simple=true")
+    private val CANONICAL_ADDRESSES_URI: Uri = Uri.parse("content://mms-sms/canonical-addresses")
+    private val MMS_PARTS_URI: Uri = Uri.parse("content://mms/part")
 
     /** Toutes les conversations, la plus récente en premier. */
     fun loadConversations(context: Context): List<SmsConversation> {
-        // Pour chaque fil : le dernier SMS (le premier rencontré, tri par date décroissante) et le nombre de non-lus.
-        val latest = LinkedHashMap<Long, SmsConversation>()
+        // Pour chaque fil : le dernier message (le premier rencontré, tri par date décroissante) et le nombre de non-lus.
+        val latest = HashMap<Long, SmsConversation>()
         val unread = HashMap<Long, Int>()
-        query(context, selection = null, args = null, sortOrder = "${Telephony.Sms.DATE} DESC") { row ->
+        querySms(context, selection = null, args = null, sortOrder = "${Telephony.Sms.DATE} DESC") { row ->
             if (row.isIncoming && !row.read) unread[row.threadId] = (unread[row.threadId] ?: 0) + 1
             if (row.threadId !in latest) {
                 latest[row.threadId] = SmsConversation(
                     threadId = row.threadId,
-                    address = row.address,
+                    addresses = listOf(row.address),
                     displayName = row.address,
                     snippet = row.body,
                     lastIsOutgoing = !row.isIncoming,
@@ -75,45 +105,100 @@ object SmsRepository {
                 )
             }
         }
+        val latestMms = HashMap<Long, MmsRow>()
+        queryMms(context, MMS_SELECTION, null, "${Telephony.Mms.DATE} DESC") { row ->
+            if (row.isIncoming && !row.read) unread[row.threadId] = (unread[row.threadId] ?: 0) + 1
+            if (row.threadId !in latestMms) latestMms[row.threadId] = row
+        }
+        // Un MMS plus récent que le dernier SMS devient le dernier message du fil.
+        for ((threadId, mms) in latestMms) {
+            val sms = latest[threadId]
+            if (sms == null || mms.date > sms.date) {
+                latest[threadId] = SmsConversation(
+                    threadId = threadId,
+                    addresses = sms?.addresses.orEmpty(),
+                    displayName = "",
+                    snippet = mmsSnippet(context, mms),
+                    lastIsOutgoing = !mms.isIncoming,
+                    date = mms.date,
+                    unreadCount = 0,
+                )
+            }
+        }
+
+        val members = threadMembers(context, threadId = null)
         val names = ContactNames(context)
-        return latest.values.map { it.copy(displayName = names.lookup(it.address), unreadCount = unread[it.threadId] ?: 0) }
+        return latest.values
+            .map { conversation ->
+                val addresses = members[conversation.threadId]?.takeIf { it.isNotEmpty() } ?: conversation.addresses
+                conversation.copy(
+                    addresses = addresses,
+                    displayName = names.title(addresses),
+                    unreadCount = unread[conversation.threadId] ?: 0,
+                )
+            }
+            .sortedByDescending { it.date }
     }
 
-    /** Les SMS d'une conversation, le plus ancien en premier. */
-    fun loadMessages(context: Context, threadId: Long): List<SmsItem> {
+    /** Les SMS et MMS d'une conversation, le plus ancien en premier. */
+    fun loadMessages(context: Context, threadId: Long, isGroup: Boolean): List<SmsItem> {
         val items = ArrayList<SmsItem>()
-        query(context, "${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString()), "${Telephony.Sms.DATE} ASC") { row ->
-            items += SmsItem(id = row.id, body = row.body, date = row.date, status = row.status)
+        querySms(context, "${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString()), "${Telephony.Sms.DATE} ASC") { row ->
+            items += SmsItem(key = "sms-${row.id}", body = row.body, date = row.date, status = row.status)
         }
-        return items
+        val names = ContactNames(context)
+        queryMms(context, "${Telephony.Mms.THREAD_ID} = ? AND $MMS_SELECTION", arrayOf(threadId.toString()), "${Telephony.Mms.DATE} ASC") { row ->
+            val parts = loadParts(context, row.id)
+            items += SmsItem(
+                key = "mms-${row.id}",
+                body = parts.texts.joinToString("\n").ifBlank { row.subject.orEmpty() },
+                date = row.date,
+                status = row.status,
+                sender = if (isGroup && row.isIncoming) mmsSender(context, row.id)?.let(names::lookup) else null,
+                attachments = parts.attachments,
+            )
+        }
+        return items.sortedBy { it.date }
     }
+
+    /** Conversation d'un fil existant (notification d'un MMS de groupe…). */
+    fun threadInfo(context: Context, threadId: Long): SmsThreadInfo {
+        val addresses = threadMembers(context, threadId)[threadId].orEmpty()
+        return SmsThreadInfo(threadId, addresses, ContactNames(context).title(addresses))
+    }
+
+    /** Conversation avec un numéro (créée si elle n'existe pas). */
+    fun threadInfo(context: Context, address: String): SmsThreadInfo =
+        SmsThreadInfo(threadIdFor(context, address), listOf(address), displayName(context, address))
 
     /** Nom du contact pour un numéro, ou le numéro lui-même. */
     fun displayName(context: Context, address: String): String = ContactNames(context).lookup(address)
 
+    /** Titre d'une conversation : le nom du correspondant, ou ceux des membres du groupe. */
+    fun conversationTitle(context: Context, addresses: List<String>): String = ContactNames(context).title(addresses)
+
     /** Fil de conversation d'un numéro (créé s'il n'existe pas). */
     fun threadIdFor(context: Context, address: String): Long = Telephony.Threads.getOrCreateThreadId(context, address)
 
-    /** Marque comme lus tous les SMS reçus d'une conversation. */
+    /** Marque comme lus tous les SMS et MMS reçus d'une conversation. */
     fun markThreadRead(context: Context, threadId: Long) {
         val values = ContentValues().apply {
             put(Telephony.Sms.READ, 1)
             put(Telephony.Sms.SEEN, 1)
         }
+        val args = arrayOf(threadId.toString())
         try {
-            context.contentResolver.update(
-                Telephony.Sms.CONTENT_URI,
-                values,
-                "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.READ} = 0",
-                arrayOf(threadId.toString()),
-            )
+            context.contentResolver.update(Telephony.Sms.CONTENT_URI, values, "${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.READ} = 0", args)
+            context.contentResolver.update(Telephony.Mms.CONTENT_URI, values, "${Telephony.Mms.THREAD_ID} = ? AND ${Telephony.Mms.READ} = 0", args)
         } catch (e: Exception) {
-            // Seule l'app SMS par défaut peut modifier les SMS.
+            // Seule l'app SMS par défaut peut modifier les messages.
             Timber.w(e, "Impossible de marquer la conversation comme lue")
         }
     }
 
-    private class Row(
+    // ── SMS ──────────────────────────────────────────────────────────────────
+
+    private class SmsRow(
         val id: Long,
         val threadId: Long,
         val address: String,
@@ -133,33 +218,138 @@ object SmsRepository {
             }
     }
 
-    private fun query(context: Context, selection: String?, args: Array<String>?, sortOrder: String, onRow: (Row) -> Unit) {
-        try {
-            context.contentResolver.query(Telephony.Sms.CONTENT_URI, PROJECTION, selection, args, sortOrder)?.use { c ->
-                val iId = c.getColumnIndexOrThrow(Telephony.Sms._ID)
-                val iThread = c.getColumnIndexOrThrow(Telephony.Sms.THREAD_ID)
-                val iAddress = c.getColumnIndexOrThrow(Telephony.Sms.ADDRESS)
-                val iBody = c.getColumnIndexOrThrow(Telephony.Sms.BODY)
-                val iDate = c.getColumnIndexOrThrow(Telephony.Sms.DATE)
-                val iType = c.getColumnIndexOrThrow(Telephony.Sms.TYPE)
-                val iRead = c.getColumnIndexOrThrow(Telephony.Sms.READ)
-                while (c.moveToNext()) {
-                    onRow(
-                        Row(
-                            id = c.getLong(iId),
-                            threadId = c.getLong(iThread),
-                            address = c.getString(iAddress).orEmpty(),
-                            body = c.getString(iBody).orEmpty(),
-                            date = c.getLong(iDate),
-                            type = c.getInt(iType),
-                            read = c.getInt(iRead) == 1,
-                        )
-                    )
-                }
+    private fun querySms(context: Context, selection: String?, args: Array<String>?, sortOrder: String, onRow: (SmsRow) -> Unit) {
+        query(context, Telephony.Sms.CONTENT_URI, SMS_PROJECTION, selection, args, sortOrder) { c ->
+            onRow(
+                SmsRow(
+                    id = c.getLong(0),
+                    threadId = c.getLong(1),
+                    address = c.getString(2).orEmpty(),
+                    body = c.getString(3).orEmpty(),
+                    date = c.getLong(4),
+                    type = c.getInt(5),
+                    read = c.getInt(6) == 1,
+                )
+            )
+        }
+    }
+
+    // ── MMS ──────────────────────────────────────────────────────────────────
+
+    private class MmsRow(
+        val id: Long,
+        val threadId: Long,
+        /** En millisecondes (la base MMS compte en secondes). */
+        val date: Long,
+        val box: Int,
+        val read: Boolean,
+        val subject: String?,
+    ) {
+        val isIncoming: Boolean get() = box == Telephony.Mms.MESSAGE_BOX_INBOX
+        val status: SmsStatus
+            get() = when (box) {
+                Telephony.Mms.MESSAGE_BOX_INBOX -> SmsStatus.RECEIVED
+                Telephony.Mms.MESSAGE_BOX_SENT -> SmsStatus.SENT
+                Telephony.Mms.MESSAGE_BOX_FAILED -> SmsStatus.FAILED
+                else -> SmsStatus.SENDING
             }
-        } catch (e: SecurityException) {
-            // Permission de lecture des SMS absente (Pigeon n'est pas l'app SMS par défaut).
-            Timber.w(e, "Lecture des SMS refusée")
+    }
+
+    private fun queryMms(context: Context, selection: String, args: Array<String>?, sortOrder: String, onRow: (MmsRow) -> Unit) {
+        query(context, Telephony.Mms.CONTENT_URI, MMS_PROJECTION, selection, args, sortOrder) { c ->
+            onRow(
+                MmsRow(
+                    id = c.getLong(0),
+                    threadId = c.getLong(1),
+                    date = c.getLong(2) * 1000,
+                    box = c.getInt(3),
+                    read = c.getInt(4) == 1,
+                    subject = c.getString(5),
+                )
+            )
+        }
+    }
+
+    private class MmsParts(val texts: List<String>, val attachments: List<MmsAttachment>)
+
+    /** Texte et pièces jointes d'un MMS (la présentation SMIL est ignorée). */
+    private fun loadParts(context: Context, mmsId: Long): MmsParts {
+        val texts = ArrayList<String>()
+        val attachments = ArrayList<MmsAttachment>()
+        val projection = arrayOf(Telephony.Mms.Part._ID, Telephony.Mms.Part.CONTENT_TYPE, Telephony.Mms.Part.TEXT)
+        query(context, MMS_PARTS_URI, projection, "${Telephony.Mms.Part.MSG_ID} = ?", arrayOf(mmsId.toString()), "${Telephony.Mms.Part.SEQ} ASC") { c ->
+            val type = c.getString(1).orEmpty().lowercase()
+            when {
+                type == "text/plain" -> c.getString(2)?.takeIf { it.isNotBlank() }?.let { texts += it }
+                type == "application/smil" -> Unit
+                else -> attachments += MmsAttachment(Uri.parse("content://mms/part/${c.getLong(0)}"), type)
+            }
+        }
+        return MmsParts(texts, attachments)
+    }
+
+    private fun mmsSnippet(context: Context, row: MmsRow): String {
+        val parts = loadParts(context, row.id)
+        return mmsPreview(parts.texts, parts.attachments.map { it.contentType }, row.subject)
+    }
+
+    /** Expéditeur d'un MMS reçu. */
+    private fun mmsSender(context: Context, mmsId: Long): String? {
+        var sender: String? = null
+        val uri = Uri.parse("content://mms/$mmsId/addr")
+        query(context, uri, arrayOf(Telephony.Mms.Addr.ADDRESS), "${Telephony.Mms.Addr.TYPE} = 137", null, null) { c ->
+            if (sender == null) sender = c.getString(0)
+        }
+        return sender
+    }
+
+    // ── Membres des conversations ────────────────────────────────────────────
+
+    /** Numéros des membres de chaque fil (ou du seul fil [threadId]). */
+    private fun threadMembers(context: Context, threadId: Long?): Map<Long, List<String>> {
+        val recipientIds = HashMap<Long, List<Long>>()
+        query(
+            context,
+            THREADS_URI,
+            arrayOf(Telephony.Threads._ID, Telephony.Threads.RECIPIENT_IDS),
+            threadId?.let { "${Telephony.Threads._ID} = ?" },
+            threadId?.let { arrayOf(it.toString()) },
+            null,
+        ) { c ->
+            recipientIds[c.getLong(0)] = c.getString(1).orEmpty().split(' ').mapNotNull { it.trim().toLongOrNull() }
+        }
+        val addresses = HashMap<Long, String>()
+        query(context, CANONICAL_ADDRESSES_URI, arrayOf("_id", "address"), null, null, null) { c ->
+            addresses[c.getLong(0)] = c.getString(1).orEmpty()
+        }
+        return recipientIds.mapValues { (_, ids) -> ids.mapNotNull { id -> addresses[id] ?: canonicalAddress(context, id) } }
+    }
+
+    /** Numéro d'un membre, si la liste complète n'a pas pu être lue. */
+    private fun canonicalAddress(context: Context, id: Long): String? {
+        var address: String? = null
+        query(context, Uri.parse("content://mms-sms/canonical-address/$id"), null, null, null, null) { c ->
+            address = c.getString(c.getColumnIndexOrThrow("address"))
+        }
+        return address
+    }
+
+    private fun query(
+        context: Context,
+        uri: Uri,
+        projection: Array<String>?,
+        selection: String?,
+        args: Array<String>?,
+        sortOrder: String?,
+        onRow: (Cursor) -> Unit,
+    ) {
+        try {
+            context.contentResolver.query(uri, projection, selection, args, sortOrder)?.use { c ->
+                while (c.moveToNext()) onRow(c)
+            }
+        } catch (e: Exception) {
+            // Permission de lecture des SMS absente (Pigeon n'est pas l'app SMS par défaut), ou base différente selon le fabricant.
+            Timber.w(e, "Lecture impossible : %s", uri)
         }
     }
 
@@ -182,5 +372,8 @@ object SmsRepository {
                 } ?: address
             }
         }
+
+        /** "Alice" pour une conversation, "Alice, Bob, Carole" pour un groupe. */
+        fun title(addresses: List<String>): String = addresses.joinToString(", ") { lookup(it) }
     }
 }
