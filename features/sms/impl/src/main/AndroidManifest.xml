@@ -14,6 +14,8 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_MMS" />
     <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+    <!-- Afficher le nom des contacts plutôt que leur numéro. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <!-- Les tablettes sans carte SIM peuvent quand même installer l'app. -->
     <uses-feature
@@ -21,6 +23,26 @@
         android:required="false" />
 
     <application>
+
+        <!-- Écran des SMS (liste des conversations et fil). -->
+        <activity
+            android:name="io.element.android.features.sms.impl.SmsActivity"
+            android:exported="false"
+            android:label="@string/sms_launcher_label"
+            android:launchMode="singleTask"
+            android:taskAffinity="io.github.petermethee.pigeon.sms" />
+
+        <!-- Deuxième icône "Pigeon SMS" sur l'écran d'accueil (provisoire, en attendant le fil fusionné). -->
+        <activity-alias
+            android:name="io.element.android.features.sms.impl.SmsLauncher"
+            android:exported="true"
+            android:label="@string/sms_launcher_label"
+            android:targetActivity="io.element.android.features.sms.impl.SmsActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- 1. Réception des SMS (seule l'app par défaut reçoit SMS_DELIVER). -->
         <receiver

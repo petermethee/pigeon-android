@@ -8,7 +8,6 @@ package io.element.android.features.sms.impl
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -35,14 +34,14 @@ object SmsNotifier {
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_sms)
-            .setContentTitle(address)
+            .setContentTitle(SmsRepository.displayName(context, address))
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             // Sur l'écran verrouillé : "SMS de …" sans le contenu.
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setContentIntent(openAppIntent(context))
+            .setContentIntent(openConversationIntent(context, address))
             .setAutoCancel(true)
             .build()
 
@@ -62,10 +61,12 @@ object SmsNotifier {
         manager.createNotificationChannel(channel)
     }
 
-    /** Toucher la notification ouvre Pigeon (l'écran des SMS viendra à l'étape 3). */
-    private fun openAppIntent(context: Context): PendingIntent? {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        return PendingIntent.getActivity(context, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-    }
+    /** Toucher la notification ouvre directement la conversation dans Pigeon. */
+    private fun openConversationIntent(context: Context, address: String): PendingIntent =
+        PendingIntent.getActivity(
+            context,
+            address.hashCode(),
+            SmsActivity.intent(context, address),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
 }
