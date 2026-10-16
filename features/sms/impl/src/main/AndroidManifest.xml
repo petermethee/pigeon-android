@@ -28,7 +28,7 @@
         <activity
             android:name="io.element.android.features.sms.impl.SmsActivity"
             android:exported="false"
-            android:label="@string/sms_launcher_label"
+            android:label="@string/screen_sms_launcher_label"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
             android:taskAffinity="io.github.petermethee.pigeon.sms" />
@@ -37,7 +37,7 @@
         <activity-alias
             android:name="io.element.android.features.sms.impl.SmsLauncher"
             android:exported="true"
-            android:label="@string/sms_launcher_label"
+            android:label="@string/screen_sms_launcher_label"
             android:targetActivity="io.element.android.features.sms.impl.SmsActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

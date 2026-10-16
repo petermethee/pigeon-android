@@ -18,6 +18,9 @@ dependencies {
     implementation(libs.androidx.corektx)
     // Chargement des SMS en arrière-plan.
     implementation(libs.coroutines.core)
-    // Thème et couleurs d'Element (design system "Compound"), pour un rendu homogène.
+    // Thème, couleurs, icônes et composants d'Element (design system "Compound"), pour un rendu homogène.
     implementation(projects.libraries.compound)
+    implementation(projects.libraries.designsystem)
+    // Textes communs traduits (Envoyer, Annuler…).
+    implementation(projects.libraries.uiStrings)
 }

@@ -46,13 +46,12 @@ object SmsSender {
             null
         } ?: return false
 
-        // 2. L'envoyer. Un SMS long est découpé en plusieurs morceaux ; seul le dernier donne le résultat.
+        // 2. L'envoyer. Un SMS long est découpé en plusieurs morceaux, chacun donnant son résultat.
         return try {
             val manager = smsManager(context)
             val parts = manager.divideMessage(body)
             val sentIntents = ArrayList<PendingIntent?>(parts.size)
-            repeat(parts.size - 1) { sentIntents += null }
-            sentIntents += SmsSentReceiver.pendingIntent(context, uri)
+            parts.indices.forEach { index -> sentIntents += SmsSentReceiver.pendingIntent(context, uri, index, isLast = index == parts.lastIndex) }
             manager.sendMultipartTextMessage(address, null, parts, sentIntents, null)
             Timber.i("SMS en cours d'envoi (%d morceau(x)) : %s", parts.size, uri)
             true
@@ -76,27 +75,40 @@ internal fun smsManager(context: Context, subscriptionId: Int? = null): SmsManag
         if (subscriptionId != null) SmsManager.getSmsManagerForSubscriptionId(subscriptionId) else SmsManager.getDefault()
     }
 
-/** Reçoit le résultat de l'envoi d'un SMS et met à jour son état ("envoyé" ou "échec"). */
+/**
+ * Reçoit le résultat de l'envoi de chaque morceau d'un SMS et met à jour son état.
+ *
+ * Un morceau en échec fait passer le SMS en "échec", définitivement ; le dernier morceau envoyé le fait passer
+ * en "envoyé", sauf si un morceau a déjà échoué (les résultats peuvent arriver dans le désordre).
+ */
 class SmsSentReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val uri = intent.data ?: return
+        val smsUri = intent.data?.buildUpon()?.fragment(null)?.build() ?: return
         val ok = resultCode == Activity.RESULT_OK
-        setType(context, uri, if (ok) Telephony.Sms.MESSAGE_TYPE_SENT else Telephony.Sms.MESSAGE_TYPE_FAILED)
-        Timber.i("Résultat d'envoi du SMS %s : %s (code %d)", uri, if (ok) "envoyé" else "échec", resultCode)
+        when {
+            !ok -> setType(context, smsUri, Telephony.Sms.MESSAGE_TYPE_FAILED)
+            intent.getBooleanExtra(EXTRA_IS_LAST, true) -> setType(context, smsUri, Telephony.Sms.MESSAGE_TYPE_SENT, onlyIfNotFailed = true)
+        }
+        Timber.i("Résultat d'envoi d'un morceau du SMS %s : %s (code %d)", smsUri, if (ok) "envoyé" else "échec", resultCode)
     }
 
     companion object {
-        fun pendingIntent(context: Context, smsUri: Uri): PendingIntent {
-            val intent = Intent(context, SmsSentReceiver::class.java).setData(smsUri)
-            // Un code par SMS, pour ne pas mélanger les résultats de plusieurs envois.
+        private const val EXTRA_IS_LAST = "is_last"
+
+        fun pendingIntent(context: Context, smsUri: Uri, partIndex: Int, isLast: Boolean): PendingIntent {
+            // Une adresse par morceau ("…/12#2") : Android garde ainsi un PendingIntent distinct pour chacun.
+            val intent = Intent(context, SmsSentReceiver::class.java)
+                .setData(smsUri.buildUpon().fragment(partIndex.toString()).build())
+                .putExtra(EXTRA_IS_LAST, isLast)
             val requestCode = ContentUris.parseId(smsUri).toInt()
             return PendingIntent.getBroadcast(context, requestCode, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
 
-        fun setType(context: Context, smsUri: Uri, type: Int) {
+        fun setType(context: Context, smsUri: Uri, type: Int, onlyIfNotFailed: Boolean = false) {
             val values = ContentValues().apply { put(Telephony.Sms.TYPE, type) }
+            val selection = if (onlyIfNotFailed) "${Telephony.Sms.TYPE} != ${Telephony.Sms.MESSAGE_TYPE_FAILED}" else null
             try {
-                context.contentResolver.update(smsUri, values, null, null)
+                context.contentResolver.update(smsUri, values, selection, null)
             } catch (e: Exception) {
                 Timber.e(e, "Impossible de mettre à jour l'état du SMS")
             }

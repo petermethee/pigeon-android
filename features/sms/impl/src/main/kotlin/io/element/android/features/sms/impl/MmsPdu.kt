@@ -36,6 +36,7 @@ class MmsPdu(
     companion object {
         const val TYPE_SEND_REQ = 0x80
         const val TYPE_NOTIFICATION_IND = 0x82
+        const val TYPE_NOTIFY_RESP_IND = 0x83
         const val TYPE_RETRIEVE_CONF = 0x84
         const val TYPE_ACKNOWLEDGE_IND = 0x85
 
@@ -61,6 +62,21 @@ class MmsPdu(
             write(0x80 or MMS_VERSION_1_2)
         }.toByteArray()
 
+        /**
+         * Réponse à un avis de MMS (M-NotifyResp.ind) : "MMS récupéré". Envoyée quand le MMS téléchargé
+         * ne demande pas d'accusé de réception, ou quand l'avis arrive pour un MMS déjà reçu.
+         */
+        fun notifyResponseRetrieved(transactionId: String): ByteArray = ByteArrayOutputStream().apply {
+            write(0x80 or FIELD_MESSAGE_TYPE)
+            write(TYPE_NOTIFY_RESP_IND)
+            write(0x80 or FIELD_TRANSACTION_ID)
+            writeText(transactionId)
+            write(0x80 or FIELD_VERSION)
+            write(0x80 or MMS_VERSION_1_2)
+            write(0x80 or FIELD_STATUS)
+            write(STATUS_RETRIEVED)
+        }.toByteArray()
+
         // Codes des en-têtes (OMA-TS-MMS_ENC, tableau 25).
         internal const val FIELD_CC = 0x02
         internal const val FIELD_CONTENT_LOCATION = 0x03
@@ -70,10 +86,12 @@ class MmsPdu(
         internal const val FIELD_MESSAGE_ID = 0x0B
         internal const val FIELD_MESSAGE_TYPE = 0x0C
         internal const val FIELD_VERSION = 0x0D
+        internal const val FIELD_STATUS = 0x15
         internal const val FIELD_SUBJECT = 0x16
         internal const val FIELD_TO = 0x17
         internal const val FIELD_TRANSACTION_ID = 0x18
         internal const val MMS_VERSION_1_2 = 0x12
+        private const val STATUS_RETRIEVED = 0x81
 
         private fun ByteArrayOutputStream.writeText(text: String) {
             val bytes = text.toByteArray(Charsets.US_ASCII)
@@ -96,11 +114,17 @@ class MmsPart(
     val charset: Int?,
     val data: ByteArray,
 ) {
-    val isText: Boolean get() = contentType.startsWith("text/") || contentType == "application/smil"
+    /**
+     * Pièce rangée comme texte dans la base (comme le fait Android) ; les autres pièces, y compris
+     * les cartes de visite (text/x-vcard), sont rangées comme fichiers.
+     */
+    val isText: Boolean get() = contentType in TEXT_TYPES
 
     /** Contenu d'une pièce texte. */
     fun text(): String = String(data, charsetFor(charset)).trimEnd('\u0000')
 }
+
+private val TEXT_TYPES = setOf("text/plain", "text/html", "application/smil")
 
 /** Une valeur d'en-tête brute : un nombre, un texte, ou des octets précédés de leur longueur. */
 private sealed interface WspValue {
@@ -204,7 +228,7 @@ private class PduReader(private val b: ByteArray) {
             val data = b.copyOfRange(pos, pos + dataLength)
             pos += dataLength
             parts += MmsPart(
-                contentType = type.mediaType,
+                contentType = type.mediaType.lowercase(),
                 name = type.name,
                 fileName = fileName,
                 contentId = contentId,

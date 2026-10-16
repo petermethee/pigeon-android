@@ -46,9 +46,14 @@ data class SmsItem(
     /** Nom de l'expéditeur, pour un message reçu dans un groupe. */
     val sender: String? = null,
     val attachments: List<MmsAttachment> = emptyList(),
+    /** MMS pas encore téléchargé : son avis en attente. */
+    val pendingMms: PendingMmsState? = null,
 ) {
     val isIncoming: Boolean get() = status == SmsStatus.RECEIVED
 }
+
+/** MMS annoncé mais pas encore téléchargé ([downloading]), ou dont le téléchargement a échoué. */
+data class PendingMmsState(val id: Long, val downloading: Boolean)
 
 /** Pièce jointe d'un MMS (photo, vidéo…), lisible à l'adresse [uri]. */
 data class MmsAttachment(val uri: Uri, val contentType: String) {
@@ -77,10 +82,12 @@ object SmsRepository {
         Telephony.Mms.MESSAGE_BOX,
         Telephony.Mms.READ,
         Telephony.Mms.SUBJECT,
+        Telephony.Mms.MESSAGE_TYPE,
+        Telephony.Mms.STATUS,
     )
 
-    // Les avis de MMS pas encore téléchargés (laissés par une autre app) et les brouillons ne sont pas affichés.
-    private const val MMS_SELECTION = "${Telephony.Mms.MESSAGE_TYPE} != 130 AND ${Telephony.Mms.MESSAGE_BOX} != ${Telephony.Mms.MESSAGE_BOX_DRAFTS}"
+    // Les brouillons ne sont pas affichés.
+    private const val MMS_SELECTION = "${Telephony.Mms.MESSAGE_BOX} != ${Telephony.Mms.MESSAGE_BOX_DRAFTS}"
 
     private val THREADS_URI: Uri = Uri.parse("content://mms-sms/conversations?simple=true")
     private val CANONICAL_ADDRESSES_URI: Uri = Uri.parse("content://mms-sms/canonical-addresses")
@@ -107,7 +114,7 @@ object SmsRepository {
         }
         val latestMms = HashMap<Long, MmsRow>()
         queryMms(context, MMS_SELECTION, null, "${Telephony.Mms.DATE} DESC") { row ->
-            if (row.isIncoming && !row.read) unread[row.threadId] = (unread[row.threadId] ?: 0) + 1
+            if (row.isIncoming && !row.read && !row.isPending) unread[row.threadId] = (unread[row.threadId] ?: 0) + 1
             if (row.threadId !in latestMms) latestMms[row.threadId] = row
         }
         // Un MMS plus récent que le dernier SMS devient le dernier message du fil.
@@ -148,7 +155,7 @@ object SmsRepository {
         }
         val names = ContactNames(context)
         queryMms(context, "${Telephony.Mms.THREAD_ID} = ? AND $MMS_SELECTION", arrayOf(threadId.toString()), "${Telephony.Mms.DATE} ASC") { row ->
-            val parts = loadParts(context, row.id)
+            val parts = if (row.isPending) MmsParts(emptyList(), emptyList()) else loadParts(context, row.id)
             items += SmsItem(
                 key = "mms-${row.id}",
                 body = parts.texts.joinToString("\n").ifBlank { row.subject.orEmpty() },
@@ -156,6 +163,7 @@ object SmsRepository {
                 status = row.status,
                 sender = if (isGroup && row.isIncoming) mmsSender(context, row.id)?.let(names::lookup) else null,
                 attachments = parts.attachments,
+                pendingMms = if (row.isPending) PendingMmsState(row.id, downloading = row.downloadState == MmsStore.STATE_DOWNLOADING) else null,
             )
         }
         return items.sortedBy { it.date }
@@ -244,8 +252,12 @@ object SmsRepository {
         val box: Int,
         val read: Boolean,
         val subject: String?,
+        val type: Int,
+        /** État de téléchargement d'un avis en attente. */
+        val downloadState: Int,
     ) {
         val isIncoming: Boolean get() = box == Telephony.Mms.MESSAGE_BOX_INBOX
+        val isPending: Boolean get() = type == MmsPdu.TYPE_NOTIFICATION_IND
         val status: SmsStatus
             get() = when (box) {
                 Telephony.Mms.MESSAGE_BOX_INBOX -> SmsStatus.RECEIVED
@@ -265,6 +277,8 @@ object SmsRepository {
                     box = c.getInt(3),
                     read = c.getInt(4) == 1,
                     subject = c.getString(5),
+                    type = c.getInt(6),
+                    downloadState = c.getInt(7),
                 )
             )
         }
@@ -279,9 +293,10 @@ object SmsRepository {
         val projection = arrayOf(Telephony.Mms.Part._ID, Telephony.Mms.Part.CONTENT_TYPE, Telephony.Mms.Part.TEXT)
         query(context, MMS_PARTS_URI, projection, "${Telephony.Mms.Part.MSG_ID} = ?", arrayOf(mmsId.toString()), "${Telephony.Mms.Part.SEQ} ASC") { c ->
             val type = c.getString(1).orEmpty().lowercase()
-            when {
-                type == "text/plain" -> c.getString(2)?.takeIf { it.isNotBlank() }?.let { texts += it }
-                type == "application/smil" -> Unit
+            when (type) {
+                "text/plain" -> c.getString(2)?.takeIf { it.isNotBlank() }?.let { texts += it }
+                // Présentation, et version HTML d'un texte déjà présent : non affichées.
+                "application/smil", "text/html" -> Unit
                 else -> attachments += MmsAttachment(Uri.parse("content://mms/part/${c.getLong(0)}"), type)
             }
         }
@@ -289,8 +304,9 @@ object SmsRepository {
     }
 
     private fun mmsSnippet(context: Context, row: MmsRow): String {
+        if (row.isPending) return context.getString(R.string.screen_sms_preview_pending_mms)
         val parts = loadParts(context, row.id)
-        return mmsPreview(parts.texts, parts.attachments.map { it.contentType }, row.subject)
+        return mmsPreview(context, parts.texts, parts.attachments.map { it.contentType }, row.subject)
     }
 
     /** Expéditeur d'un MMS reçu. */

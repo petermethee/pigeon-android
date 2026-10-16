@@ -25,30 +25,45 @@ import kotlin.concurrent.thread
  * puis prévient [MmsDownloadedReceiver] qui l'enregistre dans la base SMS/MMS du téléphone.
  */
 object MmsDownloader {
-    fun download(context: Context, location: String, subscriptionId: Int?) {
+    /** Télécharge le MMS annoncé par l'avis [pending] (aussi pour réessayer après un échec). */
+    fun download(context: Context, pending: PendingMms) {
+        if (pending.id >= 0) MmsStore.setPendingState(context, pending.id, downloading = true)
         val file = newTempFile(context)
         try {
             val uri = shareTempFile(context, file)
-            val downloaded = MmsDownloadedReceiver.pendingIntent(context, file.name, subscriptionId)
-            smsManager(context, subscriptionId).downloadMultimediaMessage(context, location, uri, null, downloaded)
+            val downloaded = MmsDownloadedReceiver.pendingIntent(context, file.name, pending)
+            smsManager(context, pending.subscriptionId).downloadMultimediaMessage(context, pending.location, uri, null, downloaded)
             Timber.i("Téléchargement du MMS lancé")
         } catch (e: Exception) {
             Timber.e(e, "Téléchargement du MMS impossible")
             file.delete()
+            if (pending.id >= 0) MmsStore.setPendingState(context, pending.id, downloading = false)
         }
+    }
+
+    /** Relance le téléchargement de l'avis en attente n° [pendingId] (bouton "Réessayer" de la conversation). */
+    fun retry(context: Context, pendingId: Long) {
+        MmsStore.pending(context, pendingId)?.let { download(context, it) }
     }
 
     /**
      * Accusé de réception envoyé à l'opérateur une fois le MMS enregistré ; sans lui, certains
      * opérateurs renvoient l'avis plus tard.
      */
-    fun acknowledge(context: Context, transactionId: String, subscriptionId: Int?) {
+    fun acknowledge(context: Context, transactionId: String, subscriptionId: Int?) =
+        sendToCarrier(context, MmsPdu.acknowledge(transactionId), subscriptionId)
+
+    /** Réponse "MMS récupéré" à un avis, quand il n'y a pas d'accusé de réception à envoyer. */
+    fun sendNotifyResponse(context: Context, notificationTransactionId: String, subscriptionId: Int?) =
+        sendToCarrier(context, MmsPdu.notifyResponseRetrieved(notificationTransactionId), subscriptionId)
+
+    private fun sendToCarrier(context: Context, pdu: ByteArray, subscriptionId: Int?) {
         val file = newTempFile(context)
         try {
-            file.writeBytes(MmsPdu.acknowledge(transactionId))
+            file.writeBytes(pdu)
             smsManager(context, subscriptionId).sendMultimediaMessage(context, shareTempFile(context, file), null, null, null)
         } catch (e: Exception) {
-            Timber.w(e, "Accusé de réception du MMS impossible")
+            Timber.w(e, "Réponse à l'opérateur pour le MMS impossible")
         }
     }
 
@@ -85,47 +100,87 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val fileName = intent.getStringExtra(EXTRA_FILE) ?: return
         val file = File(MmsDownloader.tempDir(context), fileName)
-        val subscriptionId = intent.getIntExtra(EXTRA_SUBSCRIPTION, -1).takeIf { it >= 0 }
-        if (resultCode != Activity.RESULT_OK) {
-            // Souvent : données mobiles indisponibles, ou MMS expiré chez l'opérateur.
-            Timber.w("Échec du téléchargement du MMS (code %d)", resultCode)
-            file.delete()
-            SmsNotifier.notifyMmsDownloadFailed(context)
-            return
-        }
+        val pending = PendingMms(
+            id = intent.getLongExtra(EXTRA_PENDING_ID, -1),
+            threadId = intent.getLongExtra(EXTRA_THREAD_ID, -1),
+            location = intent.getStringExtra(EXTRA_LOCATION).orEmpty(),
+            transactionId = intent.getStringExtra(EXTRA_TRANSACTION_ID),
+            subscriptionId = intent.getIntExtra(EXTRA_SUBSCRIPTION, -1).takeIf { it >= 0 },
+            failed = false,
+        )
+        val ok = resultCode == Activity.RESULT_OK
         // Lecture et enregistrement hors du fil principal.
-        val pending = goAsync()
+        val async = goAsync()
         thread(name = "pigeon-mms") {
             try {
-                save(context, file.readBytes(), subscriptionId)
+                if (ok) {
+                    save(context, file.readBytes(), pending)
+                } else {
+                    // Souvent : données mobiles indisponibles, ou MMS expiré chez l'opérateur.
+                    Timber.w("Échec du téléchargement du MMS (code %d)", resultCode)
+                    failed(context, pending)
+                }
             } catch (e: Exception) {
                 Timber.e(e, "Enregistrement du MMS impossible")
+                failed(context, pending)
             } finally {
                 file.delete()
-                pending.finish()
+                async.finish()
             }
         }
     }
 
-    private fun save(context: Context, bytes: ByteArray, subscriptionId: Int?) {
+    private fun save(context: Context, bytes: ByteArray, pending: PendingMms) {
         val pdu = MmsPdu.parse(bytes)
         if (pdu?.messageType != MmsPdu.TYPE_RETRIEVE_CONF) {
-            Timber.w("MMS téléchargé illisible : ignoré")
+            Timber.w("MMS téléchargé illisible")
+            failed(context, pending)
             return
         }
-        val saved = MmsStore.saveIncoming(context, pdu, bytes.size, subscriptionId) ?: return
-        pdu.transactionId?.let { MmsDownloader.acknowledge(context, it, subscriptionId) }
+        val saved = MmsStore.saveIncoming(
+            context = context,
+            pdu = pdu,
+            size = bytes.size,
+            subscriptionId = pending.subscriptionId,
+            location = pending.location.ifEmpty { null },
+            pendingId = pending.id.takeIf { it >= 0 },
+        )
+        if (saved == null) {
+            failed(context, pending)
+            return
+        }
+        // Accusé de réception si le MMS en demande un, sinon réponse "récupéré" à l'avis.
+        val retrieveTransactionId = pdu.transactionId
+        val notificationTransactionId = pending.transactionId
+        when {
+            retrieveTransactionId != null -> MmsDownloader.acknowledge(context, retrieveTransactionId, pending.subscriptionId)
+            notificationTransactionId != null -> MmsDownloader.sendNotifyResponse(context, notificationTransactionId, pending.subscriptionId)
+        }
         SmsNotifier.notifyIncoming(context, saved.threadId, saved.title, saved.preview)
+    }
+
+    /** L'avis reste dans la conversation, avec un bouton pour réessayer. */
+    private fun failed(context: Context, pending: PendingMms) {
+        if (pending.id >= 0) MmsStore.setPendingState(context, pending.id, downloading = false)
+        SmsNotifier.notifyMmsDownloadFailed(context, pending.threadId.takeIf { it >= 0 })
     }
 
     companion object {
         private const val EXTRA_FILE = "file"
+        private const val EXTRA_PENDING_ID = "pending_id"
+        private const val EXTRA_THREAD_ID = "thread_id"
+        private const val EXTRA_LOCATION = "location"
+        private const val EXTRA_TRANSACTION_ID = "transaction_id"
         private const val EXTRA_SUBSCRIPTION = "subscription"
 
-        fun pendingIntent(context: Context, fileName: String, subscriptionId: Int?): PendingIntent {
+        fun pendingIntent(context: Context, fileName: String, pending: PendingMms): PendingIntent {
             val intent = Intent(context, MmsDownloadedReceiver::class.java)
                 .putExtra(EXTRA_FILE, fileName)
-                .putExtra(EXTRA_SUBSCRIPTION, subscriptionId ?: -1)
+                .putExtra(EXTRA_PENDING_ID, pending.id)
+                .putExtra(EXTRA_THREAD_ID, pending.threadId)
+                .putExtra(EXTRA_LOCATION, pending.location)
+                .putExtra(EXTRA_TRANSACTION_ID, pending.transactionId)
+                .putExtra(EXTRA_SUBSCRIPTION, pending.subscriptionId ?: -1)
             return PendingIntent.getBroadcast(context, fileName.hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
     }

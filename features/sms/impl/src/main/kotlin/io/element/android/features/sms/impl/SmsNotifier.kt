@@ -25,19 +25,28 @@ object SmsNotifier {
     // Les numéros de conversation sont positifs : pas de collision.
     private const val MMS_FAILED_ID = -1
 
+    /**
+     * Conversation affichée à l'écran en ce moment (null si aucune) : ses nouveaux messages s'y affichent
+     * directement, sans notification.
+     */
+    @Volatile
+    var visibleThreadId: Long? = null
+
     /** Toucher la notification ouvre directement la conversation dans Pigeon. */
     fun notifyIncoming(context: Context, threadId: Long, title: String, text: String) {
+        if (threadId == visibleThreadId) return
         notify(context, notificationId(threadId), title, text, SmsActivity.intent(context, threadId = threadId))
     }
 
-    /** Le MMS n'a pas pu être téléchargé (données mobiles coupées, MMS expiré…). */
-    fun notifyMmsDownloadFailed(context: Context) {
+    /** Le MMS n'a pas pu être téléchargé (données mobiles coupées, MMS expiré…) : on peut réessayer depuis la conversation. */
+    fun notifyMmsDownloadFailed(context: Context, threadId: Long?) {
+        if (threadId != null && threadId == visibleThreadId) return
         notify(
             context,
-            id = MMS_FAILED_ID,
-            title = "MMS non reçu",
-            text = "Le téléchargement d'un MMS a échoué. Vérifie que les données mobiles et les MMS sont activés.",
-            open = SmsActivity.intent(context),
+            id = threadId?.let(::notificationId) ?: MMS_FAILED_ID,
+            title = context.getString(R.string.screen_sms_notification_mms_failed_title),
+            text = context.getString(R.string.screen_sms_notification_mms_failed_text),
+            open = SmsActivity.intent(context, threadId = threadId),
         )
     }
 
@@ -77,8 +86,8 @@ object SmsNotifier {
 
     private fun createChannel(context: Context, manager: NotificationManagerCompat) {
         val channel = NotificationChannelCompat.Builder(CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_HIGH)
-            .setName(context.getString(R.string.sms_notification_channel_name))
-            .setDescription(context.getString(R.string.sms_notification_channel_description))
+            .setName(context.getString(R.string.screen_sms_notification_channel_name))
+            .setDescription(context.getString(R.string.screen_sms_notification_channel_description))
             .build()
         // Sans effet si le canal existe déjà.
         manager.createNotificationChannel(channel)

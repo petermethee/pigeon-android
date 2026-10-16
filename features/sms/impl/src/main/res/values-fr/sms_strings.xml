@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<resources>
+    <string name="screen_sms_launcher_label">Pigeon SMS</string>
+    <string name="screen_sms_notification_channel_name">SMS</string>
+    <string name="screen_sms_notification_channel_description">Nouveaux SMS et MMS reçus</string>
+    <string name="screen_sms_notification_mms_failed_title">MMS non reçu</string>
+    <string name="screen_sms_notification_mms_failed_text">Le téléchargement a échoué. Vérifie que les données mobiles sont activées, puis réessaie depuis la conversation.</string>
+
+    <string name="screen_sms_list_title">SMS</string>
+    <string name="screen_sms_list_empty">Aucun SMS.\nSi tu en as, vérifie que Pigeon est l\'app SMS par défaut.</string>
+    <string name="screen_sms_new_conversation">Nouvelle conversation</string>
+    <string name="screen_sms_new_conversation_number">Numéro de téléphone</string>
+    <string name="screen_sms_last_message_outgoing">Vous : %1$s</string>
+
+    <string name="screen_sms_composer_placeholder">SMS</string>
+    <string name="screen_sms_error_not_default_app">Envoi impossible : Pigeon doit être l\'app SMS par défaut.</string>
+    <string name="screen_sms_group_reply_unavailable">Répondre à un groupe n\'est pas encore possible.</string>
+    <string name="screen_sms_unknown_recipient">Correspondant inconnu.</string>
+    <string name="screen_sms_status_sending">Envoi…</string>
+    <string name="screen_sms_status_failed">Échec de l\'envoi</string>
+    <string name="screen_sms_attachment">📎 Pièce jointe (%1$s)</string>
+    <string name="screen_sms_photo">Photo</string>
+    <string name="screen_sms_mms_downloading">Téléchargement du MMS…</string>
+    <string name="screen_sms_mms_download_failed">MMS non téléchargé. Toucher pour réessayer.</string>
+
+    <string name="screen_sms_group_preview">%1$s : %2$s</string>
+    <string name="screen_sms_preview_photo">📷 Photo</string>
+    <string name="screen_sms_preview_video">🎬 Vidéo</string>
+    <string name="screen_sms_preview_audio">🎤 Audio</string>
+    <string name="screen_sms_preview_attachment">📎 Pièce jointe</string>
+    <string name="screen_sms_preview_pending_mms">📩 MMS pas encore téléchargé</string>
+
+    <string name="screen_sms_self_number_title">Ton numéro de téléphone</string>
+    <string name="screen_sms_self_number_text">Pigeon en a besoin pour ne pas t\'ajouter toi-même aux conversations de groupe (MMS). Il reste sur ce téléphone.</string>
+</resources>
