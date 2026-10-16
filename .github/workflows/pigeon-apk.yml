@@ -1,0 +1,71 @@
+# Pigeon : compile l'APK à chaque modification de la branche "pigeon" et le publie
+# comme "release" GitHub. L'app Obtainium sur le téléphone détecte la nouvelle release
+# et propose de l'installer.
+#
+# Signature : clé de debug incluse dans le dépôt (app/signature/debug.keystore), la même
+# que pour une compilation dans Android Studio. Les deux versions sont donc interchangeables.
+
+name: Pigeon APK
+
+on:
+  push:
+    branches: [ pigeon ]
+  workflow_dispatch:
+
+# Une seule compilation à la fois : une nouvelle modification annule la précédente.
+concurrency:
+  group: pigeon-apk
+  cancel-in-progress: true
+
+permissions:
+  contents: write # pour créer la release
+
+env:
+  GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx8g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8 -XX:+UseG1GC -Dkotlin.daemon.jvm.options=-Xmx4g
+
+jobs:
+  build:
+    name: Compiler et publier l'APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Libérer de l'espace disque
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Java 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Gradle (avec cache, pour accélérer les compilations suivantes)
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-read-only: false
+
+      - name: Compiler l'APK
+        run: ./gradlew :app:assembleGplayDebug --stacktrace --no-configuration-cache
+
+      - name: Publier la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="pigeon-${GITHUB_RUN_NUMBER}"
+          cp app/build/outputs/apk/gplay/debug/app-gplay-universal-debug.apk "pigeon-${GITHUB_RUN_NUMBER}.apk"
+          gh release create "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Pigeon ${GITHUB_RUN_NUMBER}" \
+            --notes "$(git log -1 --format='%s%n%n%b' "$GITHUB_SHA")" \
+            --latest
