@@ -9,12 +9,16 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
+import android.database.ContentObserver
 import android.database.Cursor
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.ContactsContract
 import android.provider.Telephony
 import androidx.core.content.ContextCompat
 import timber.log.Timber
+import java.util.concurrent.ConcurrentHashMap
 
 /** Une conversation : un fil avec un correspondant, ou plusieurs pour un groupe (MMS). */
 data class SmsConversation(
@@ -75,6 +79,13 @@ object SmsRepository {
         Telephony.Sms.TYPE,
         Telephony.Sms.READ,
     )
+    private val SMS_LIGHT_PROJECTION = arrayOf(
+        Telephony.Sms._ID,
+        Telephony.Sms.THREAD_ID,
+        Telephony.Sms.DATE,
+        Telephony.Sms.TYPE,
+        Telephony.Sms.READ,
+    )
     private val MMS_PROJECTION = arrayOf(
         Telephony.Mms._ID,
         Telephony.Mms.THREAD_ID,
@@ -95,22 +106,34 @@ object SmsRepository {
 
     /** Toutes les conversations, la plus récente en premier. */
     fun loadConversations(context: Context): List<SmsConversation> {
-        // Pour chaque fil : le dernier message (le premier rencontré, tri par date décroissante) et le nombre de non-lus.
-        val latest = HashMap<Long, SmsConversation>()
+        // 1. Parcours léger de tous les SMS (sans leur texte) : le dernier SMS de chaque fil et le nombre de non-lus.
+        val latestSms = HashMap<Long, SmsRow>()
         val unread = HashMap<Long, Int>()
-        querySms(context, selection = null, args = null, sortOrder = "${Telephony.Sms.DATE} DESC") { row ->
+        query(context, Telephony.Sms.CONTENT_URI, SMS_LIGHT_PROJECTION, null, null, "${Telephony.Sms.DATE} DESC") { c ->
+            val row = SmsRow(id = c.getLong(0), threadId = c.getLong(1), address = "", body = "", date = c.getLong(2), type = c.getInt(3), read = c.getInt(4) == 1)
             if (row.isIncoming && !row.read) unread[row.threadId] = (unread[row.threadId] ?: 0) + 1
-            if (row.threadId !in latest) {
-                latest[row.threadId] = SmsConversation(
-                    threadId = row.threadId,
-                    addresses = listOf(row.address),
-                    displayName = row.address,
-                    snippet = row.body,
-                    lastIsOutgoing = !row.isIncoming,
-                    date = row.date,
-                    unreadCount = 0,
-                )
+            if (row.threadId !in latestSms) latestSms[row.threadId] = row
+        }
+        // 2. Texte et numéro de ces seuls derniers SMS.
+        val bodies = HashMap<Long, Pair<String, String>>()
+        latestSms.values.map { it.id }.chunked(500).forEach { ids ->
+            val selection = "${Telephony.Sms._ID} IN (${ids.joinToString(",")})"
+            query(context, Telephony.Sms.CONTENT_URI, arrayOf(Telephony.Sms._ID, Telephony.Sms.BODY, Telephony.Sms.ADDRESS), selection, null, null) { c ->
+                bodies[c.getLong(0)] = c.getString(1).orEmpty() to c.getString(2).orEmpty()
             }
+        }
+        val latest = HashMap<Long, SmsConversation>()
+        for ((threadId, row) in latestSms) {
+            val (body, address) = bodies[row.id] ?: ("" to "")
+            latest[threadId] = SmsConversation(
+                threadId = threadId,
+                addresses = listOf(address),
+                displayName = address,
+                snippet = body,
+                lastIsOutgoing = !row.isIncoming,
+                date = row.date,
+                unreadCount = 0,
+            )
         }
         val latestMms = HashMap<Long, MmsRow>()
         queryMms(context, MMS_SELECTION, null, "${Telephony.Mms.DATE} DESC") { row ->
@@ -154,8 +177,12 @@ object SmsRepository {
             items += SmsItem(key = "sms-${row.id}", body = row.body, date = row.date, status = row.status)
         }
         val names = ContactNames(context)
-        queryMms(context, "${Telephony.Mms.THREAD_ID} = ? AND $MMS_SELECTION", arrayOf(threadId.toString()), "${Telephony.Mms.DATE} ASC") { row ->
-            val parts = if (row.isPending) MmsParts(emptyList(), emptyList()) else loadParts(context, row.id)
+        val mmsRows = ArrayList<MmsRow>()
+        queryMms(context, "${Telephony.Mms.THREAD_ID} = ? AND $MMS_SELECTION", arrayOf(threadId.toString()), "${Telephony.Mms.DATE} ASC") { mmsRows += it }
+        // Pièces de tous les MMS de la conversation en une seule lecture.
+        val partsByMms = loadParts(context, mmsRows.filterNot { it.isPending }.map { it.id })
+        for (row in mmsRows) {
+            val parts = partsByMms[row.id] ?: MmsParts(emptyList(), emptyList())
             items += SmsItem(
                 key = "mms-${row.id}",
                 body = parts.texts.joinToString("\n").ifBlank { row.subject.orEmpty() },
@@ -286,26 +313,29 @@ object SmsRepository {
 
     private class MmsParts(val texts: List<String>, val attachments: List<MmsAttachment>)
 
-    /** Texte et pièces jointes d'un MMS (la présentation SMIL est ignorée). */
-    private fun loadParts(context: Context, mmsId: Long): MmsParts {
-        val texts = ArrayList<String>()
-        val attachments = ArrayList<MmsAttachment>()
-        val projection = arrayOf(Telephony.Mms.Part._ID, Telephony.Mms.Part.CONTENT_TYPE, Telephony.Mms.Part.TEXT)
-        query(context, MMS_PARTS_URI, projection, "${Telephony.Mms.Part.MSG_ID} = ?", arrayOf(mmsId.toString()), "${Telephony.Mms.Part.SEQ} ASC") { c ->
-            val type = c.getString(1).orEmpty().lowercase()
-            when (type) {
-                "text/plain" -> c.getString(2)?.takeIf { it.isNotBlank() }?.let { texts += it }
-                // Présentation, et version HTML d'un texte déjà présent : non affichées.
-                "application/smil", "text/html" -> Unit
-                else -> attachments += MmsAttachment(Uri.parse("content://mms/part/${c.getLong(0)}"), type)
+    /** Texte et pièces jointes de plusieurs MMS, par MMS (la présentation SMIL est ignorée). */
+    private fun loadParts(context: Context, mmsIds: List<Long>): Map<Long, MmsParts> {
+        val texts = HashMap<Long, MutableList<String>>()
+        val attachments = HashMap<Long, MutableList<MmsAttachment>>()
+        val projection = arrayOf(Telephony.Mms.Part._ID, Telephony.Mms.Part.MSG_ID, Telephony.Mms.Part.CONTENT_TYPE, Telephony.Mms.Part.TEXT)
+        mmsIds.chunked(500).forEach { ids ->
+            val selection = "${Telephony.Mms.Part.MSG_ID} IN (${ids.joinToString(",")})"
+            query(context, MMS_PARTS_URI, projection, selection, null, "${Telephony.Mms.Part.SEQ} ASC") { c ->
+                val mmsId = c.getLong(1)
+                when (val type = c.getString(2).orEmpty().lowercase()) {
+                    "text/plain" -> c.getString(3)?.takeIf { it.isNotBlank() }?.let { texts.getOrPut(mmsId) { ArrayList() } += it }
+                    // Présentation, et version HTML d'un texte déjà présent : non affichées.
+                    "application/smil", "text/html" -> Unit
+                    else -> attachments.getOrPut(mmsId) { ArrayList() } += MmsAttachment(Uri.parse("content://mms/part/${c.getLong(0)}"), type)
+                }
             }
         }
-        return MmsParts(texts, attachments)
+        return mmsIds.associateWith { MmsParts(texts[it].orEmpty(), attachments[it].orEmpty()) }
     }
 
     private fun mmsSnippet(context: Context, row: MmsRow): String {
         if (row.isPending) return context.getString(R.string.screen_sms_preview_pending_mms)
-        val parts = loadParts(context, row.id)
+        val parts = loadParts(context, listOf(row.id))[row.id] ?: MmsParts(emptyList(), emptyList())
         return mmsPreview(context, parts.texts, parts.attachments.map { it.contentType }, row.subject)
     }
 
@@ -369,27 +399,61 @@ object SmsRepository {
         }
     }
 
-    /** Recherche des noms dans les contacts, avec un cache (un même numéro revient souvent). */
+    /** Recherche des noms dans les contacts. */
     private class ContactNames(private val context: Context) {
-        private val cache = HashMap<String, String>()
         private val allowed = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
 
         fun lookup(address: String): String {
             if (!allowed || address.isBlank()) return address
-            return cache.getOrPut(address) {
-                val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(address))
-                try {
-                    context.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use { c ->
-                        if (c.moveToFirst()) c.getString(0) else null
-                    }
-                } catch (e: Exception) {
-                    Timber.w(e, "Recherche de contact impossible")
-                    null
-                } ?: address
-            }
+            return ContactNameCache.get(context, address)
         }
 
         /** "Alice" pour une conversation, "Alice, Bob, Carole" pour un groupe. */
         fun title(addresses: List<String>): String = addresses.joinToString(", ") { lookup(it) }
+    }
+}
+
+/**
+ * Noms des contacts déjà cherchés, gardés tant que l'app tourne : chaque recherche interroge les contacts du téléphone,
+ * ce qui est lent quand il faut le refaire pour toute la liste à chaque affichage.
+ * Le cache est vidé dès qu'un contact change.
+ */
+private object ContactNameCache {
+    private val names = ConcurrentHashMap<String, String>()
+
+    @Volatile
+    private var watching = false
+
+    fun get(context: Context, address: String): String {
+        watchContacts(context)
+        return names.getOrPut(address) { find(context, address) ?: address }
+    }
+
+    private fun find(context: Context, address: String): String? {
+        val uri = Uri.withAppendedPath(ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(address))
+        return try {
+            context.contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        } catch (e: Exception) {
+            Timber.w(e, "Recherche de contact impossible")
+            null
+        }
+    }
+
+    @Synchronized
+    private fun watchContacts(context: Context) {
+        if (watching) return
+        try {
+            val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+                override fun onChange(selfChange: Boolean) {
+                    names.clear()
+                }
+            }
+            context.applicationContext.contentResolver.registerContentObserver(ContactsContract.Contacts.CONTENT_URI, true, observer)
+            watching = true
+        } catch (e: Exception) {
+            Timber.w(e, "Suivi des modifications des contacts impossible")
+        }
     }
 }

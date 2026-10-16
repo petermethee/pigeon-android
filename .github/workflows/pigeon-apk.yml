@@ -2,8 +2,11 @@
 # comme "release" GitHub. L'app Obtainium sur le téléphone détecte la nouvelle release
 # et propose de l'installer.
 #
-# Signature : clé de debug incluse dans le dépôt (app/signature/debug.keystore), la même
-# que pour une compilation dans Android Studio. Les deux versions sont donc interchangeables.
+# Signature :
+# - si la clé privée de Pigeon est enregistrée dans les secrets GitHub (PIGEON_KEYSTORE_BASE64,
+#   PIGEON_KEYSTORE_PASSWORD, PIGEON_KEY_ALIAS, PIGEON_KEY_PASSWORD), l'APK est la version "release"
+#   (app "Pigeon", optimisée, non déboguable), signée avec cette clé ;
+# - sinon, version de debug signée avec la clé de debug du dépôt (app/signature/debug.keystore).
 
 name: Pigeon APK
 
@@ -55,7 +58,30 @@ jobs:
           cache-read-only: false
 
       - name: Compiler l'APK
-        run: ./gradlew :app:assembleGplayDebug --stacktrace --no-configuration-cache
+        env:
+          KEYSTORE_BASE64: ${{ secrets.PIGEON_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.PIGEON_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.PIGEON_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.PIGEON_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            # Version optimisée, non déboguable. Element la signe avec la clé de debug : on la re-signe avec la clé privée.
+            ./gradlew :app:assembleGplayRelease --stacktrace --no-configuration-cache
+            KEYSTORE="$RUNNER_TEMP/pigeon.keystore"
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
+            APKSIGNER="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+            "$APKSIGNER" sign \
+              --ks "$KEYSTORE" --ks-pass env:KEYSTORE_PASSWORD \
+              --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+              --out "$RUNNER_TEMP/pigeon.apk" \
+              app/build/outputs/apk/gplay/release/app-gplay-arm64-v8a-release.apk
+            rm -f "$KEYSTORE"
+            "$APKSIGNER" verify --print-certs "$RUNNER_TEMP/pigeon.apk" | grep -i "certificate DN"
+            echo "APK_PATH=$RUNNER_TEMP/pigeon.apk" >> "$GITHUB_ENV"
+          else
+            ./gradlew :app:assembleGplayDebug --stacktrace --no-configuration-cache
+            echo "APK_PATH=app/build/outputs/apk/gplay/debug/app-gplay-arm64-v8a-debug.apk" >> "$GITHUB_ENV"
+          fi
 
       - name: Publier la release
         env:
@@ -63,7 +89,7 @@ jobs:
         run: |
           TAG="pigeon-${GITHUB_RUN_NUMBER}"
           # Version pour processeurs ARM 64 bits (quasiment tous les téléphones récents) : 4 fois plus légère que la version universelle.
-          cp app/build/outputs/apk/gplay/debug/app-gplay-arm64-v8a-debug.apk "pigeon-${GITHUB_RUN_NUMBER}.apk"
+          cp "$APK_PATH" "pigeon-${GITHUB_RUN_NUMBER}.apk"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             # Run relancé : la release existe déjà, on remplace seulement son APK.
             gh release upload "$TAG" "pigeon-${GITHUB_RUN_NUMBER}.apk" --repo "$GITHUB_REPOSITORY" --clobber

@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Telephony
 import android.text.format.DateUtils
+import android.util.LruCache
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -48,6 +49,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -60,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -188,10 +191,17 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
         target?.let { open(it.threadId, it.address, it.draft) }
     }
 
+    // Derniers contenus chargés, gardés pendant la navigation : la liste et une conversation déjà ouverte
+    // s'affichent tout de suite, puis sont rafraîchies en arrière-plan.
+    var conversations by remember { mutableStateOf<List<SmsConversation>?>(null) }
+    val messagesCache = remember { mutableStateMapOf<Long, List<SmsItem>>() }
+
     val thread = openThread
     if (thread == null) {
         ConversationListScreen(
             version = version,
+            conversations = conversations,
+            onLoaded = { conversations = it },
             askRecipient = draftWithoutRecipient != null,
             onOpen = { openThread = OpenThread(SmsThreadInfo(it.threadId, it.addresses, it.displayName)) },
             onNewConversation = { number ->
@@ -202,7 +212,14 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
         )
     } else {
         BackHandler { openThread = null }
-        ThreadScreen(thread = thread, version = version, resumed = resumed, onBack = { openThread = null })
+        ThreadScreen(
+            thread = thread,
+            version = version,
+            resumed = resumed,
+            messages = messagesCache[thread.info.threadId].orEmpty(),
+            onLoaded = { messagesCache[thread.info.threadId] = it },
+            onBack = { openThread = null },
+        )
     }
 }
 
@@ -256,15 +273,16 @@ private fun SelfNumberDialog(onSubmit: (String) -> Unit, onDismiss: () -> Unit) 
 @Composable
 private fun ConversationListScreen(
     version: Int,
+    conversations: List<SmsConversation>?,
+    onLoaded: (List<SmsConversation>) -> Unit,
     askRecipient: Boolean,
     onOpen: (SmsConversation) -> Unit,
     onNewConversation: (String) -> Unit,
     onNewConversationDismissed: () -> Unit,
 ) {
     val context = LocalContext.current
-    var conversations by remember { mutableStateOf<List<SmsConversation>?>(null) }
     LaunchedEffect(version) {
-        conversations = withContext(Dispatchers.IO) { SmsRepository.loadConversations(context) }
+        onLoaded(withContext(Dispatchers.IO) { SmsRepository.loadConversations(context) })
     }
     ConversationListView(
         conversations = conversations,
@@ -390,19 +408,25 @@ private fun ConversationRow(conversation: SmsConversation, onClick: () -> Unit) 
 // ── Fil d'une conversation ──────────────────────────────────────────────────────
 
 @Composable
-private fun ThreadScreen(thread: OpenThread, version: Int, resumed: Boolean, onBack: () -> Unit) {
+private fun ThreadScreen(
+    thread: OpenThread,
+    version: Int,
+    resumed: Boolean,
+    messages: List<SmsItem>,
+    onLoaded: (List<SmsItem>) -> Unit,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val info = thread.info
-    var messages by remember(info.threadId) { mutableStateOf<List<SmsItem>>(emptyList()) }
     var text by rememberSaveable(info.threadId) { mutableStateOf(thread.draft.orEmpty()) }
 
+    LaunchedEffect(info.threadId, version) {
+        onLoaded(withContext(Dispatchers.IO) { SmsRepository.loadMessages(context, info.threadId, info.isGroup) })
+    }
+    // Lus seulement s'ils sont vraiment à l'écran (pas quand l'app est en arrière-plan), après l'affichage.
     LaunchedEffect(info.threadId, version, resumed) {
-        messages = withContext(Dispatchers.IO) {
-            // Lus seulement s'ils sont vraiment à l'écran (pas quand l'app est en arrière-plan).
-            if (resumed) SmsRepository.markThreadRead(context, info.threadId)
-            SmsRepository.loadMessages(context, info.threadId, info.isGroup)
-        }
+        if (resumed) withContext(Dispatchers.IO) { SmsRepository.markThreadRead(context, info.threadId) }
     }
     // Conversation à l'écran : ses nouveaux messages ne font pas de notification, et la sienne est retirée.
     DisposableEffect(info.threadId, resumed) {
@@ -609,8 +633,11 @@ private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetry
 private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val inPreview = LocalInspectionMode.current
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, uri, maxSize) {
-        if (!inPreview) value = withContext(Dispatchers.IO) { decodeImage(context, uri, maxSize) }
+    val cacheKey = "$uri@$maxSize"
+    val bitmap by produceState<ImageBitmap?>(initialValue = imageCache.get(cacheKey), uri, maxSize) {
+        if (!inPreview && value == null) {
+            value = withContext(Dispatchers.IO) { decodeImage(context, uri, maxSize) }?.also { imageCache.put(cacheKey, it) }
+        }
     }
     val image = bitmap
     if (image == null) {
@@ -618,6 +645,11 @@ private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier) {
     } else {
         Image(bitmap = image, contentDescription = stringResource(R.string.screen_sms_photo), contentScale = ContentScale.FillWidth, modifier = modifier)
     }
+}
+
+/** Photos déjà décodées (32 Mo au plus) : revenir sur une conversation ne les redécode pas. */
+private val imageCache = object : LruCache<String, ImageBitmap>(32 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().allocationByteCount
 }
 
 private fun decodeImage(context: Context, uri: Uri, maxSize: Int): ImageBitmap? = try {
