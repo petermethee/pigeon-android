@@ -12,3 +12,8 @@ plugins {
 android {
     namespace = "io.element.android.features.sms.impl"
 }
+
+dependencies {
+    // NotificationCompat : notifications compatibles avec toutes les versions d'Android.
+    implementation(libs.androidx.corektx)
+}

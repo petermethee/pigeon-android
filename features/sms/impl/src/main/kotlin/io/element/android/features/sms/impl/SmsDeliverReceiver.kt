@@ -13,7 +13,7 @@ import android.provider.Telephony
 import timber.log.Timber
 
 /**
- * Reçoit les SMS entrants quand Pigeon est l'app SMS par défaut.
+ * Reçoit les SMS entrants quand Pigeon est l'app SMS par défaut, les enregistre et affiche une notification.
  *
  * Dans ce cas, Android n'enregistre plus lui-même les SMS reçus : c'est à l'app par défaut
  * de les écrire dans la base SMS du téléphone (le "Telephony provider"), sinon ils sont perdus.
@@ -27,9 +27,12 @@ class SmsDeliverReceiver : BroadcastReceiver() {
         if (parts.isNullOrEmpty()) return
         val first = parts.first()
 
+        val address = first.displayOriginatingAddress.orEmpty()
+        val body = parts.joinToString(separator = "") { it.displayMessageBody.orEmpty() }
+
         val values = ContentValues().apply {
-            put(Telephony.Sms.ADDRESS, first.displayOriginatingAddress)
-            put(Telephony.Sms.BODY, parts.joinToString(separator = "") { it.displayMessageBody.orEmpty() })
+            put(Telephony.Sms.ADDRESS, address)
+            put(Telephony.Sms.BODY, body)
             put(Telephony.Sms.DATE, System.currentTimeMillis())
             put(Telephony.Sms.DATE_SENT, first.timestampMillis)
             put(Telephony.Sms.SERVICE_CENTER, first.serviceCenterAddress)
@@ -46,6 +49,8 @@ class SmsDeliverReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             Timber.e(e, "Impossible d'enregistrer le SMS reçu")
         }
+
+        SmsNotifier.notifyIncomingSms(context, address, body)
     }
 
     /** Carte SIM ayant reçu le SMS (utile avec deux SIM). */

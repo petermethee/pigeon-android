@@ -5,4 +5,6 @@
   -->
 <resources>
     <string name="sms_compose_not_available" translatable="false">L\'envoi de SMS depuis Pigeon arrive bientôt.</string>
+    <string name="sms_notification_channel_name" translatable="false">SMS</string>
+    <string name="sms_notification_channel_description" translatable="false">Nouveaux SMS reçus</string>
 </resources>
