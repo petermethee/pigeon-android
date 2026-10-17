@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Bouton "Ouvrir WhatsApp" pendant la connexion par code. -->
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+
+    <application>
+        <!-- Comptes connectés (WhatsApp, Messenger), ouvert depuis les paramètres. -->
+        <activity
+            android:name="io.element.android.features.bridges.impl.BridgesActivity"
+            android:exported="false"
+            android:label="@string/screen_bridges_title"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>

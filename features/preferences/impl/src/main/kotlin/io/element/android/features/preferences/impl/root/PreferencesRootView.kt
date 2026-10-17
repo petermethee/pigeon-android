@@ -36,6 +36,7 @@ import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
 import io.element.android.compound.theme.ElementTheme
 import io.element.android.compound.tokens.generated.CompoundIcons
+import io.element.android.features.bridges.impl.R as BridgesR
 import io.element.android.features.preferences.impl.R
 import io.element.android.features.preferences.impl.account.PreferencesAccountView
 import io.element.android.features.preferences.impl.user.UserPreferences
@@ -96,6 +97,7 @@ fun PreferencesRootView(
     onOpenRageShake: () -> Unit,
     onModerationAndSafetyClick: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    onOpenConnectedAccounts: () -> Unit,
     onSignOutClick: () -> Unit,
     onDeactivateClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -145,6 +147,12 @@ fun PreferencesRootView(
                 onOpenNotificationSettings = onOpenNotificationSettings,
                 onSignOutClick = onSignOutClick,
                 onDeactivateClick = onDeactivateClick,
+            )
+            // Pigeon : comptes WhatsApp et Messenger reliés au serveur.
+            ListItem(
+                content = { Text(stringResource(id = BridgesR.string.screen_bridges_title)) },
+                leadingContent = ListItemContent.Icon(IconSource.Vector(CompoundIcons.Chat())),
+                onClick = onOpenConnectedAccounts,
             )
             // 'App settings' section
             AppSettingsSection(
@@ -452,6 +460,7 @@ private fun ContentToPreview(state: PreferencesRootState) {
         onOpenRageShake = {},
         onModerationAndSafetyClick = {},
         onOpenNotificationSettings = {},
+        onOpenConnectedAccounts = {},
         onSignOutClick = {},
         onDeactivateClick = {},
     )

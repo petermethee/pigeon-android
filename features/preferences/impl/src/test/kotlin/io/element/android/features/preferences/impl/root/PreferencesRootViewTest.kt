@@ -467,6 +467,7 @@ private fun AndroidComposeUiTest<ComponentActivity>.setView(
             onOpenRageShake = onOpenRageShake,
             onModerationAndSafetyClick = onModerationAndSafetyClick,
             onOpenNotificationSettings = onOpenNotificationSettings,
+            onOpenConnectedAccounts = {},
             onSignOutClick = onSignOutClick,
             onDeactivateClick = onDeactivateClick,
         )

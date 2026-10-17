@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ~ Copyright 2026 Pigeon contributors.
+  ~ SPDX-License-Identifier: AGPL-3.0-only
+  -->
+<resources>
+    <string name="screen_bridges_title">Comptes connectés</string>
+    <string name="screen_bridges_whatsapp">WhatsApp</string>
+    <string name="screen_bridges_messenger">Messenger</string>
+    <string name="screen_bridges_no_account">Aucun compte connecté.</string>
+    <string name="screen_bridges_add_account">Connecter un compte</string>
+    <string name="screen_bridges_disconnect">Déconnecter</string>
+    <string name="screen_bridges_disconnect_title">Déconnecter %1$s ?</string>
+    <string name="screen_bridges_disconnect_text">Ses conversations ne seront plus mises à jour dans Pigeon. Tu pourras le reconnecter plus tard.</string>
+    <string name="screen_bridges_state_connected">Connecté</string>
+    <string name="screen_bridges_state_connecting">Connexion…</string>
+    <string name="screen_bridges_state_disconnected">Déconnecté</string>
+    <string name="screen_bridges_state_error">Problème : %1$s</string>
+    <string name="screen_bridges_unreachable">Serveur injoignable (%1$s).</string>
+    <string name="screen_bridges_not_logged_in">Connecte-toi d\'abord à Pigeon.</string>
+    <string name="screen_bridges_retry">Réessayer</string>
+    <string name="screen_bridges_continue">Continuer</string>
+    <string name="screen_bridges_login_title">Connecter %1$s</string>
+    <string name="screen_bridges_whatsapp_phone">Saisis le numéro de ton compte WhatsApp, au format international (+33…).</string>
+    <string name="screen_bridges_whatsapp_code">Dans WhatsApp : Appareils connectés → Connecter un appareil → Connecter avec le numéro de téléphone, puis saisis ce code :</string>
+    <string name="screen_bridges_copy_code">Copier le code</string>
+    <string name="screen_bridges_code_copied">Code copié</string>
+    <string name="screen_bridges_open_whatsapp">Ouvrir WhatsApp</string>
+    <string name="screen_bridges_waiting">En attente de confirmation…</string>
+    <string name="screen_bridges_messenger_web">Connecte-toi à Messenger ci-dessous. Pigeon continue tout seul une fois connecté.</string>
+    <string name="screen_bridges_done">%1$s est connecté. Ses conversations vont apparaître dans Pigeon d\'ici quelques minutes.</string>
+    <string name="screen_bridges_failed">Échec de la connexion : %1$s</string>
+</resources>

@@ -19,6 +19,7 @@ import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedInject
 import io.element.android.annotations.ContributesNode
 import io.element.android.compound.theme.ElementTheme
+import io.element.android.features.bridges.impl.BridgesActivity
 import io.element.android.features.preferences.impl.account.PreferencesAccountCallback
 import io.element.android.libraries.androidutils.browser.openUrlInChromeCustomTab
 import io.element.android.libraries.architecture.callback
@@ -88,6 +89,7 @@ class PreferencesRootNode(
             onLinkNewDeviceClick = callback::navigateToLinkNewDevice,
             onManageAccountClick = { onManageAccountClick(activity, it, isDark) },
             onOpenNotificationSettings = callback::navigateToNotificationSettings,
+            onOpenConnectedAccounts = { activity.startActivity(BridgesActivity.intent(activity)) },
             onEditProfileClick = callback::navigateToUserProfile,
             onSignOutClick = callback::startSignOutFlow,
             onDeactivateClick = callback::startAccountDeactivationFlow

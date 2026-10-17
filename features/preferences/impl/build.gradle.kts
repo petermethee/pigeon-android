@@ -48,6 +48,8 @@ setupDependencyInjection()
 
 dependencies {
     implementation(projects.libraries.androidutils)
+    // Pigeon : écran des comptes connectés (WhatsApp, Messenger).
+    implementation(projects.features.bridges.impl)
     implementation(projects.libraries.core)
     implementation(projects.libraries.architecture)
     implementation(projects.libraries.matrix.api)
