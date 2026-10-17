@@ -26,6 +26,7 @@
     <string name="screen_sms_unknown_recipient">Correspondant inconnu.</string>
     <string name="screen_sms_status_sending">Envoi…</string>
     <string name="screen_sms_status_failed">Échec de l\'envoi</string>
+    <string name="screen_sms_status_failed_retry">Échec · Toucher pour renvoyer</string>
     <string name="screen_sms_attachment">📎 Pièce jointe (%1$s)</string>
     <string name="screen_sms_photo">Photo</string>
     <string name="screen_sms_mms_downloading">Téléchargement du MMS…</string>

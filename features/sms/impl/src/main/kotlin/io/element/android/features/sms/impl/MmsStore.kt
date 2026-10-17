@@ -258,6 +258,69 @@ object MmsStore {
         }
     }
 
+    /** MMS envoyé enregistré, relu pour le renvoyer après un échec. */
+    class Outgoing(val uri: Uri, val recipients: List<String>, val parts: List<MmsPart>, val transactionId: String)
+
+    /** Relit le MMS à envoyer n° [id] (destinataires et pièces, sans sa présentation SMIL, refaite à l'envoi). */
+    fun loadOutgoing(context: Context, id: Long): Outgoing? {
+        val resolver = context.contentResolver
+        val uri = ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, id)
+        return try {
+            val transactionId = resolver.query(uri, arrayOf(Telephony.Mms.TRANSACTION_ID), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0).orEmpty() else null
+            } ?: return null
+            val recipients = ArrayList<String>()
+            resolver.query(Uri.parse("content://mms/$id/addr"), arrayOf(Telephony.Mms.Addr.ADDRESS), "${Telephony.Mms.Addr.TYPE} = $ADDRESS_TO", null, null)?.use { c ->
+                while (c.moveToNext()) c.getString(0)?.takeIf { it.isNotBlank() }?.let { recipients += it }
+            }
+            val parts = ArrayList<MmsPart>()
+            val projection = arrayOf(
+                Telephony.Mms.Part._ID,
+                Telephony.Mms.Part.CONTENT_TYPE,
+                Telephony.Mms.Part.NAME,
+                Telephony.Mms.Part.FILENAME,
+                Telephony.Mms.Part.CONTENT_ID,
+                Telephony.Mms.Part.CONTENT_LOCATION,
+                Telephony.Mms.Part.TEXT,
+            )
+            resolver.query(Uri.parse("content://mms/$id/part"), projection, null, null, "${Telephony.Mms.Part.SEQ} ASC")?.use { c ->
+                while (c.moveToNext()) {
+                    val type = c.getString(1).orEmpty().lowercase()
+                    if (type == "application/smil") continue
+                    val isText = type == "text/plain"
+                    val data = if (isText) {
+                        c.getString(6).orEmpty().toByteArray(Charsets.UTF_8)
+                    } else {
+                        resolver.openInputStream(Uri.parse("content://mms/part/${c.getLong(0)}"))?.use { it.readBytes() } ?: continue
+                    }
+                    parts += MmsPart(
+                        contentType = type,
+                        name = c.getString(2),
+                        fileName = c.getString(3),
+                        contentId = c.getString(4),
+                        contentLocation = c.getString(5),
+                        charset = if (isText) CHARSET_UTF8 else null,
+                        data = data,
+                    )
+                }
+            }
+            if (recipients.isEmpty() || parts.isEmpty()) null else Outgoing(uri, recipients, parts, transactionId.ifEmpty { "T$id" })
+        } catch (e: Exception) {
+            Timber.e(e, "Impossible de relire le MMS à renvoyer")
+            null
+        }
+    }
+
+    /** Remet le MMS dans la boîte d'envoi ("en cours d'envoi"), pour le renvoyer. */
+    fun setSending(context: Context, uri: Uri) {
+        val values = ContentValues().apply { put(Telephony.Mms.MESSAGE_BOX, Telephony.Mms.MESSAGE_BOX_OUTBOX) }
+        try {
+            context.contentResolver.update(uri, values, null, null)
+        } catch (e: Exception) {
+            Timber.e(e, "Impossible de remettre le MMS dans la boîte d'envoi")
+        }
+    }
+
     /** MMS envoyé ([sent], avec l'identifiant [messageId] donné par l'opérateur) ou en échec. */
     fun setSendResult(context: Context, uri: Uri, sent: Boolean, messageId: String?) {
         val values = ContentValues().apply {

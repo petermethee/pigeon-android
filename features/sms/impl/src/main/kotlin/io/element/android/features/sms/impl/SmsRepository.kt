@@ -52,6 +52,8 @@ data class SmsItem(
     val attachments: List<MmsAttachment> = emptyList(),
     /** MMS pas encore téléchargé : son avis en attente. */
     val pendingMms: PendingMmsState? = null,
+    /** MMS envoyé dont l'envoi a échoué : son numéro, pour le renvoyer. */
+    val failedMmsId: Long? = null,
 ) {
     val isIncoming: Boolean get() = status == SmsStatus.RECEIVED
 }
@@ -191,6 +193,7 @@ object SmsRepository {
                 sender = if (isGroup && row.isIncoming) mmsSender(context, row.id)?.let(names::lookup) else null,
                 attachments = parts.attachments,
                 pendingMms = if (row.isPending) PendingMmsState(row.id, downloading = row.downloadState == MmsStore.STATE_DOWNLOADING && MmsDownloader.isDownloading(row.id)) else null,
+                failedMmsId = row.id.takeIf { row.status == SmsStatus.FAILED && row.type == MmsPdu.TYPE_SEND_REQ },
             )
         }
         return items.sortedBy { it.date }

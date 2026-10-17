@@ -30,6 +30,7 @@
     <string name="screen_sms_unknown_recipient">Unknown recipient.</string>
     <string name="screen_sms_status_sending">Sending…</string>
     <string name="screen_sms_status_failed">Not sent</string>
+    <string name="screen_sms_status_failed_retry">Not sent · Tap to retry</string>
     <string name="screen_sms_attachment">📎 Attachment (%1$s)</string>
     <string name="screen_sms_photo">Photo</string>
     <string name="screen_sms_mms_downloading">Downloading MMS…</string>

@@ -53,13 +53,24 @@ object MmsSender {
         val pdu = MmsPdu.sendRequest(transactionId, recipients, parts)
         val messageUri = MmsStore.saveOutgoing(context, recipients, parts, transactionId, pdu.size, subscriptionId = null)
             ?: return MmsSendResult.FAILED
+        return transmit(context, messageUri, pdu)
+    }
 
+    /** Renvoie le MMS n° [mmsId] dont l'envoi a échoué (toucher sa bulle). À appeler hors du fil principal. */
+    fun resend(context: Context, mmsId: Long): MmsSendResult {
+        val outgoing = MmsStore.loadOutgoing(context, mmsId) ?: return MmsSendResult.FAILED
+        MmsStore.setSending(context, outgoing.uri)
+        return transmit(context, outgoing.uri, MmsPdu.sendRequest(outgoing.transactionId, outgoing.recipients, outgoing.parts))
+    }
+
+    /** Confie le MMS [pdu], enregistré à [messageUri], à Android qui l'envoie à l'opérateur. */
+    private fun transmit(context: Context, messageUri: Uri, pdu: ByteArray): MmsSendResult {
         val file = MmsDownloader.newTempFile(context)
         return try {
             file.writeBytes(pdu)
             val sent = MmsSentReceiver.pendingIntent(context, messageUri, file.name)
             smsManager(context).sendMultimediaMessage(context, MmsDownloader.shareTempFile(context, file), null, null, sent)
-            Timber.i("MMS en cours d'envoi (%d pièce(s), %d octets) : %s", parts.size, pdu.size, messageUri)
+            Timber.i("MMS en cours d'envoi (%d octets) : %s", pdu.size, messageUri)
             MmsSendResult.STARTED
         } catch (e: Exception) {
             // Par exemple : Pigeon n'est pas l'app SMS par défaut, ou pas de carte SIM.

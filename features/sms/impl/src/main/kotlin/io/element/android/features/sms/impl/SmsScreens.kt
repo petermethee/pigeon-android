@@ -557,6 +557,12 @@ private fun ThreadScreen(
             }
         },
         onRetryMms = { pendingId -> scope.launch(Dispatchers.IO) { MmsDownloader.retry(context, pendingId) } },
+        onResendMms = { mmsId ->
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { MmsSender.resend(context, mmsId) }
+                if (result != MmsSendResult.STARTED) Toast.makeText(context, notDefaultApp, Toast.LENGTH_LONG).show()
+            }
+        },
         onBack = onBack,
     )
 }
@@ -572,6 +578,7 @@ private fun ThreadView(
     onRemovePhoto: () -> Unit,
     onSend: () -> Unit,
     onRetryMms: (Long) -> Unit,
+    onResendMms: (Long) -> Unit,
     onBack: () -> Unit,
 ) {
     var fullScreenImage by remember { mutableStateOf<Uri?>(null) }
@@ -607,7 +614,7 @@ private fun ThreadView(
             modifier = Modifier.fillMaxSize(),
         ) {
             items(messages, key = { it.key }) { message ->
-                MessageBubble(message, onImageClick = { fullScreenImage = it }, onRetryMms = onRetryMms)
+                MessageBubble(message, onImageClick = { fullScreenImage = it }, onRetryMms = onRetryMms, onResendMms = onResendMms)
             }
         }
     }
@@ -698,7 +705,7 @@ private fun Composer(
 }
 
 @Composable
-private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetryMms: (Long) -> Unit) {
+private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetryMms: (Long) -> Unit, onResendMms: (Long) -> Unit) {
     val incoming = message.isIncoming
     val pending = message.pendingMms
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = if (incoming) Alignment.CenterStart else Alignment.CenterEnd) {
@@ -710,7 +717,13 @@ private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetry
                     shape = RoundedCornerShape(16.dp),
                 )
                 .clip(RoundedCornerShape(16.dp))
-                .then(if (pending != null && !pending.downloading) Modifier.clickable { onRetryMms(pending.id) } else Modifier)
+                .then(
+                    when {
+                        pending != null && !pending.downloading -> Modifier.clickable { onRetryMms(pending.id) }
+                        message.failedMmsId != null -> Modifier.clickable { onResendMms(message.failedMmsId) }
+                        else -> Modifier
+                    }
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
         ) {
             val textColor = if (incoming) ElementTheme.colors.textPrimary else ElementTheme.colors.textOnSolidPrimary
@@ -748,7 +761,7 @@ private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetry
             Text(
                 text = when (message.status) {
                     SmsStatus.SENDING -> stringResource(R.string.screen_sms_status_sending)
-                    SmsStatus.FAILED -> stringResource(R.string.screen_sms_status_failed)
+                    SmsStatus.FAILED -> stringResource(if (message.failedMmsId != null) R.string.screen_sms_status_failed_retry else R.string.screen_sms_status_failed)
                     else -> formatDate(message.date)
                 },
                 style = ElementTheme.typography.fontBodySmRegular,
@@ -878,6 +891,7 @@ internal class ThreadPreviewParam : PreviewParameterProvider<ThreadPreviewState>
             info = SmsThreadInfo(1, listOf("+33611111111"), "Alice"),
             messages = listOf(
                 SmsItem("mms-4", "Voilà la photo", PREVIEW_NOW, SmsStatus.SENT, attachments = listOf(MmsAttachment(Uri.EMPTY, "image/jpeg"))),
+                SmsItem("mms-5", "Et celle-ci", PREVIEW_NOW, SmsStatus.FAILED, attachments = listOf(MmsAttachment(Uri.EMPTY, "image/jpeg")), failedMmsId = 5),
             ),
             photo = Uri.EMPTY,
         ),
@@ -897,6 +911,7 @@ internal fun ThreadViewPreview(@PreviewParameter(ThreadPreviewParam::class) stat
         onRemovePhoto = {},
         onSend = {},
         onRetryMms = {},
+        onResendMms = {},
         onBack = {},
     )
 }
