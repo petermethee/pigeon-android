@@ -24,7 +24,9 @@
     <string name="screen_sms_make_default_app">Set as default</string>
     <string name="screen_sms_composer_placeholder">SMS</string>
     <string name="screen_sms_error_not_default_app">Cannot send: Pigeon must be the default SMS app.</string>
-    <string name="screen_sms_group_reply_unavailable">Replying to a group is not possible yet.</string>
+    <string name="screen_sms_attach_photo">Add a photo</string>
+    <string name="screen_sms_remove_photo">Remove the photo</string>
+    <string name="screen_sms_error_photo">This photo could not be sent.</string>
     <string name="screen_sms_unknown_recipient">Unknown recipient.</string>
     <string name="screen_sms_status_sending">Sending…</string>
     <string name="screen_sms_status_failed">Not sent</string>

@@ -77,6 +77,124 @@ class MmsPdu(
             write(STATUS_RETRIEVED)
         }.toByteArray()
 
+        /**
+         * MMS à envoyer (M-Send.req) : destinataires [to] et pièces [parts], dans cet ordre.
+         *
+         * Les pièces sont envoyées en "multipart/related" avec leur présentation SMIL ([smilFor]),
+         * comme le font les apps SMS d'Android : certains opérateurs refusent les MMS sans elle.
+         * L'expéditeur est laissé à remplir par l'opérateur.
+         */
+        fun sendRequest(transactionId: String, to: List<String>, parts: List<MmsPart>): ByteArray = ByteArrayOutputStream().apply {
+            write(0x80 or FIELD_MESSAGE_TYPE)
+            write(TYPE_SEND_REQ)
+            write(0x80 or FIELD_TRANSACTION_ID)
+            writeText(transactionId)
+            write(0x80 or FIELD_VERSION)
+            write(0x80 or MMS_VERSION_1_2)
+            // Expéditeur : longueur 1, "à compléter par l'opérateur".
+            write(0x80 or FIELD_FROM)
+            write(1)
+            write(FROM_INSERT_ADDRESS)
+            to.forEach {
+                write(0x80 or FIELD_TO)
+                writeText("${phoneNumber(it)}/TYPE=PLMN")
+            }
+            write(0x80 or FIELD_MESSAGE_CLASS)
+            write(MESSAGE_CLASS_PERSONAL)
+            write(0x80 or FIELD_DELIVERY_REPORT)
+            write(NO)
+            write(0x80 or FIELD_READ_REPORT)
+            write(NO)
+            // Type du corps, toujours en dernier : multipart/related, de présentation SMIL ("start" = son Content-ID).
+            write(0x80 or FIELD_CONTENT_TYPE)
+            writeWithLength {
+                write(0x80 or WELL_KNOWN_MULTIPART_RELATED)
+                write(0x80 or PARAM_START)
+                writeText(SMIL_CONTENT_ID)
+                write(0x80 or PARAM_TYPE)
+                writeText(SMIL_TYPE)
+            }
+            // Corps : nombre de pièces, puis chacune avec ses en-têtes et son contenu.
+            val all = listOf(smilFor(parts)) + parts
+            writeUintvar(all.size)
+            for (part in all) {
+                val headers = ByteArrayOutputStream().apply { writePartHeaders(part) }.toByteArray()
+                writeUintvar(headers.size)
+                writeUintvar(part.data.size)
+                write(headers)
+                write(part.data)
+            }
+        }.toByteArray()
+
+        /** Présentation SMIL des pièces : la photo en haut, le texte en dessous. */
+        private fun smilFor(parts: List<MmsPart>): MmsPart {
+            val image = parts.firstOrNull { it.contentType.startsWith("image/") }
+            val text = parts.firstOrNull { it.contentType == "text/plain" }
+            val regions = buildString {
+                if (image != null) append("""<region id="Image" fit="meet" top="0" left="0" height="80%" width="100%"/>""")
+                if (text != null) append("""<region id="Text" top="80%" left="0" height="20%" width="100%"/>""")
+            }
+            val body = buildString {
+                image?.let { append("""<img src="${it.contentLocation}" region="Image"/>""") }
+                text?.let { append("""<text src="${it.contentLocation}" region="Text"/>""") }
+            }
+            val smil = "<smil><head><layout><root-layout/>$regions</layout></head><body><par dur=\"5000ms\">$body</par></body></smil>"
+            return MmsPart(SMIL_TYPE, name = null, fileName = null, contentId = SMIL_CONTENT_ID, contentLocation = "smil.xml", charset = null, data = smil.toByteArray())
+        }
+
+        /** Type de la pièce (avec son jeu de caractères pour un texte), puis son adresse et son identifiant. */
+        private fun ByteArrayOutputStream.writePartHeaders(part: MmsPart) {
+            writeWithLength {
+                val code = WELL_KNOWN_CODES[part.contentType]
+                if (code != null) write(0x80 or code) else writeText(part.contentType)
+                part.charset?.let {
+                    write(0x80 or PARAM_CHARSET)
+                    write(0x80 or it)
+                }
+                part.contentLocation?.let {
+                    write(0x80 or PARAM_NAME)
+                    writeText(it)
+                }
+            }
+            part.contentLocation?.let {
+                write(0x80 or PART_CONTENT_LOCATION_FIELD)
+                writeText(it)
+            }
+            part.contentId?.let {
+                write(0x80 or PART_CONTENT_ID_FIELD)
+                // Texte entre guillemets : marqueur 0x22 au début.
+                write(0x22)
+                write(it.toByteArray(Charsets.US_ASCII))
+                write(0)
+            }
+        }
+
+        /** Numéro sans espaces ni séparateurs ("06 12-34" → "061234"), seule forme acceptée par l'opérateur. */
+        private fun phoneNumber(address: String): String = address.filter { it.isDigit() || it == '+' }.ifEmpty { address }
+
+        /** Valeur précédée de sa longueur : sur un octet jusqu'à 30, sinon 31 puis la longueur. */
+        private fun ByteArrayOutputStream.writeWithLength(content: ByteArrayOutputStream.() -> Unit) {
+            val bytes = ByteArrayOutputStream().apply(content).toByteArray()
+            if (bytes.size <= 30) {
+                write(bytes.size)
+            } else {
+                write(31)
+                writeUintvar(bytes.size)
+            }
+            write(bytes)
+        }
+
+        /** Nombre écrit par groupes de 7 bits, le bit de poids fort indiquant qu'un groupe suit. */
+        private fun ByteArrayOutputStream.writeUintvar(value: Int) {
+            var shift = 28
+            while (shift > 0 && (value ushr shift) == 0) shift -= 7
+            while (shift > 0) {
+                write(0x80 or ((value ushr shift) and 0x7F))
+                shift -= 7
+            }
+            write(value and 0x7F)
+        }
+
         // Codes des en-têtes (OMA-TS-MMS_ENC, tableau 25).
         internal const val FIELD_CC = 0x02
         internal const val FIELD_CONTENT_LOCATION = 0x03
@@ -90,7 +208,25 @@ class MmsPdu(
         internal const val FIELD_SUBJECT = 0x16
         internal const val FIELD_TO = 0x17
         internal const val FIELD_TRANSACTION_ID = 0x18
+        internal const val FIELD_DELIVERY_REPORT = 0x06
+        internal const val FIELD_MESSAGE_CLASS = 0x0A
+        internal const val FIELD_READ_REPORT = 0x10
         internal const val MMS_VERSION_1_2 = 0x12
+        private const val FROM_INSERT_ADDRESS = 0x81
+        private const val MESSAGE_CLASS_PERSONAL = 0x80
+        private const val NO = 0x81
+
+        // Type du corps et des pièces (WAP WSP, tableaux 38 et 40).
+        private const val WELL_KNOWN_MULTIPART_RELATED = 0x33
+        private const val PARAM_CHARSET = 0x01
+        private const val PARAM_NAME = 0x05
+        private const val PARAM_TYPE = 0x09
+        private const val PARAM_START = 0x0A
+        private const val PART_CONTENT_LOCATION_FIELD = 0x0E
+        private const val PART_CONTENT_ID_FIELD = 0x40
+        private const val SMIL_TYPE = "application/smil"
+        private const val SMIL_CONTENT_ID = "<smil>"
+        private val WELL_KNOWN_CODES = mapOf("text/plain" to 0x03, "image/gif" to 0x1D, "image/jpeg" to 0x1E, "image/png" to 0x20)
         private const val STATUS_RETRIEVED = 0x81
 
         private fun ByteArrayOutputStream.writeText(text: String) {

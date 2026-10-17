@@ -20,7 +20,9 @@
     <string name="screen_sms_make_default_app">Définir</string>
     <string name="screen_sms_composer_placeholder">SMS</string>
     <string name="screen_sms_error_not_default_app">Envoi impossible : Pigeon doit être l\'app SMS par défaut.</string>
-    <string name="screen_sms_group_reply_unavailable">Répondre à un groupe n\'est pas encore possible.</string>
+    <string name="screen_sms_attach_photo">Ajouter une photo</string>
+    <string name="screen_sms_remove_photo">Retirer la photo</string>
+    <string name="screen_sms_error_photo">Impossible d\'envoyer cette photo.</string>
     <string name="screen_sms_unknown_recipient">Correspondant inconnu.</string>
     <string name="screen_sms_status_sending">Envoi…</string>
     <string name="screen_sms_status_failed">Échec de l\'envoi</string>

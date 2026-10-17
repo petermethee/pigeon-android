@@ -89,7 +89,7 @@ object MmsDownloader {
 
     internal fun tempDir(context: Context): File = File(context.cacheDir, "mms").apply { mkdirs() }
 
-    private fun newTempFile(context: Context): File {
+    internal fun newTempFile(context: Context): File {
         val dir = tempDir(context)
         // Ménage : fichiers oubliés (téléchargement sans réponse, accusés de réception déjà envoyés).
         val expired = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
@@ -98,7 +98,7 @@ object MmsDownloader {
     }
 
     /** Adresse "content://" du fichier, lisible et modifiable par le service MMS d'Android. */
-    private fun shareTempFile(context: Context, file: File): Uri {
+    internal fun shareTempFile(context: Context, file: File): Uri {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.mms", file)
         // Android donne normalement lui-même l'accès au service MMS ; on le donne aussi par sécurité.
         try {

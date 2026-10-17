@@ -87,6 +87,11 @@
             android:name="io.element.android.features.sms.impl.SmsSentReceiver"
             android:exported="false" />
 
+        <!-- Résultat de l'envoi d'un MMS (envoyé ou échec). -->
+        <receiver
+            android:name="io.element.android.features.sms.impl.MmsSentReceiver"
+            android:exported="false" />
+
         <!-- 3. Écran de rédaction, ouvert par les autres apps (ex. "Envoyer un SMS" depuis les contacts). -->
         <activity
             android:name="io.element.android.features.sms.impl.ComposeSmsActivity"

@@ -23,6 +23,7 @@ import android.util.LruCache
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -495,6 +496,10 @@ private fun ThreadScreen(
     val scope = rememberCoroutineScope()
     val info = thread.info
     var text by rememberSaveable(info.threadId) { mutableStateOf(thread.draft.orEmpty()) }
+    var photo by rememberSaveable(info.threadId) { mutableStateOf<Uri?>(null) }
+    val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) photo = uri
+    }
 
     LaunchedEffect(info.threadId, version) {
         onLoaded(withContext(Dispatchers.IO) { SmsRepository.loadMessages(context, info.threadId, info.isGroup) })
@@ -515,18 +520,39 @@ private fun ThreadScreen(
     }
 
     val notDefaultApp = stringResource(R.string.screen_sms_error_not_default_app)
+    val photoError = stringResource(R.string.screen_sms_error_photo)
     ThreadView(
         info = info,
         messages = messages,
         text = text,
+        photo = photo,
         onTextChange = { text = it },
+        onAttachPhoto = { pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+        onRemovePhoto = { photo = null },
         onSend = {
             val body = text.trim()
-            if (body.isNotEmpty()) {
+            val image = photo
+            if (body.isNotEmpty() || image != null) {
                 text = ""
+                photo = null
                 scope.launch {
-                    val started = withContext(Dispatchers.IO) { SmsSender.send(context, info.addresses.first(), body) }
-                    if (!started) Toast.makeText(context, notDefaultApp, Toast.LENGTH_LONG).show()
+                    // Un texte seul à une personne part en SMS ; une photo, ou tout message à un groupe, en MMS.
+                    val result = withContext(Dispatchers.IO) {
+                        if (image == null && !info.isGroup) {
+                            if (SmsSender.send(context, info.addresses.first(), body)) MmsSendResult.STARTED else MmsSendResult.FAILED
+                        } else {
+                            MmsSender.send(context, info.addresses, body, image)
+                        }
+                    }
+                    when (result) {
+                        MmsSendResult.STARTED -> Unit
+                        MmsSendResult.PHOTO_UNREADABLE -> {
+                            // Rien n'est parti : le texte est remis dans la zone de saisie.
+                            if (text.isEmpty()) text = body
+                            Toast.makeText(context, photoError, Toast.LENGTH_LONG).show()
+                        }
+                        MmsSendResult.FAILED -> Toast.makeText(context, notDefaultApp, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         },
@@ -540,7 +566,10 @@ private fun ThreadView(
     info: SmsThreadInfo,
     messages: List<SmsItem>,
     text: String,
+    photo: Uri?,
     onTextChange: (String) -> Unit,
+    onAttachPhoto: () -> Unit,
+    onRemovePhoto: () -> Unit,
     onSend: () -> Unit,
     onRetryMms: (Long) -> Unit,
     onBack: () -> Unit,
@@ -559,11 +588,10 @@ private fun ThreadView(
             )
         },
         bottomBar = {
-            when {
-                // L'envoi aux groupes passe par un MMS : prochaine étape.
-                info.isGroup -> BottomNotice(stringResource(R.string.screen_sms_group_reply_unavailable))
-                info.addresses.isEmpty() -> BottomNotice(stringResource(R.string.screen_sms_unknown_recipient))
-                else -> Composer(text = text, onTextChange = onTextChange, onSend = onSend)
+            if (info.addresses.isEmpty()) {
+                BottomNotice(stringResource(R.string.screen_sms_unknown_recipient))
+            } else {
+                Composer(text = text, photo = photo, onTextChange = onTextChange, onAttachPhoto = onAttachPhoto, onRemovePhoto = onRemovePhoto, onSend = onSend)
             }
         },
     ) { padding ->
@@ -612,27 +640,59 @@ private fun BottomNotice(text: String) {
     )
 }
 
-/** Zone de saisie, qui remonte au-dessus du clavier. */
+/** Zone de saisie, avec la photo choisie au-dessus ; elle remonte au-dessus du clavier. */
 @Composable
-private fun Composer(text: String, onTextChange: (String) -> Unit, onSend: () -> Unit) {
-    Row(
+private fun Composer(
+    text: String,
+    photo: Uri?,
+    onTextChange: (String) -> Unit,
+    onAttachPhoto: () -> Unit,
+    onRemovePhoto: () -> Unit,
+    onSend: () -> Unit,
+) {
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(ElementTheme.colors.bgCanvasDefault)
             .navigationBarsPadding()
             .imePadding()
             .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextField(
-            value = text,
-            onValueChange = onTextChange,
-            placeholder = stringResource(R.string.screen_sms_composer_placeholder),
-            maxLines = 5,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onSend, enabled = text.isNotBlank()) {
-            Icon(CompoundIcons.Send(), contentDescription = stringResource(CommonStrings.action_send))
+        if (photo != null) {
+            Box(modifier = Modifier.padding(start = 48.dp, bottom = 6.dp)) {
+                MmsImage(
+                    uri = photo,
+                    maxSize = 512,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(96.dp)
+                        .clip(RoundedCornerShape(12.dp)),
+                )
+                IconButton(
+                    onClick = onRemovePhoto,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(32.dp)
+                        .background(ElementTheme.colors.bgCanvasDefault.copy(alpha = 0.8f), CircleShape),
+                ) {
+                    Icon(CompoundIcons.Close(), contentDescription = stringResource(R.string.screen_sms_remove_photo))
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onAttachPhoto) {
+                Icon(CompoundIcons.Image(), contentDescription = stringResource(R.string.screen_sms_attach_photo))
+            }
+            TextField(
+                value = text,
+                onValueChange = onTextChange,
+                placeholder = stringResource(R.string.screen_sms_composer_placeholder),
+                maxLines = 5,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onSend, enabled = text.isNotBlank() || photo != null) {
+                Icon(CompoundIcons.Send(), contentDescription = stringResource(CommonStrings.action_send))
+            }
         }
     }
 }
@@ -705,7 +765,7 @@ private fun MessageBubble(message: SmsItem, onImageClick: (Uri) -> Unit, onRetry
 
 /** Photo d'un MMS, réduite à [maxSize] pixels au plus pour ne pas saturer la mémoire. */
 @Composable
-private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier) {
+private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.FillWidth) {
     val context = LocalContext.current
     val inPreview = LocalInspectionMode.current
     val cacheKey = "$uri@$maxSize"
@@ -718,7 +778,7 @@ private fun MmsImage(uri: Uri, maxSize: Int, modifier: Modifier = Modifier) {
     if (image == null) {
         Box(modifier = modifier.size(width = 220.dp, height = 160.dp).background(ElementTheme.colors.bgSubtlePrimary))
     } else {
-        Image(bitmap = image, contentDescription = stringResource(R.string.screen_sms_photo), contentScale = ContentScale.FillWidth, modifier = modifier)
+        Image(bitmap = image, contentDescription = stringResource(R.string.screen_sms_photo), contentScale = contentScale, modifier = modifier)
     }
 }
 
@@ -785,31 +845,58 @@ internal fun ConversationListViewPreview(@PreviewParameter(ConversationListPrevi
     ConversationListView(conversations = conversations, isDefaultApp = conversations != null, onMakeDefault = {}, askRecipient = false, onOpen = {}, onNewConversation = {}, onNewConversationDismissed = {})
 }
 
-internal class ThreadPreviewParam : PreviewParameterProvider<Pair<SmsThreadInfo, List<SmsItem>>> {
-    override val values: Sequence<Pair<SmsThreadInfo, List<SmsItem>>> = sequenceOf(
-        SmsThreadInfo(1, listOf("+33611111111"), "Alice") to listOf(
-            SmsItem("sms-1", "Salut, tu viens ce soir ?", PREVIEW_NOW - 60_000, SmsStatus.RECEIVED),
-            SmsItem("sms-2", "Oui, vers 20 h", PREVIEW_NOW - 30_000, SmsStatus.SENT),
-            SmsItem("sms-3", "Je prends le pain", PREVIEW_NOW, SmsStatus.SENDING),
-            SmsItem("sms-4", "Message non parti", PREVIEW_NOW, SmsStatus.FAILED),
-        ),
-        SmsThreadInfo(3, listOf("+33611111111", "+33633333333"), "Alice, Carole") to listOf(
-            SmsItem(
-                key = "mms-1",
-                body = "Regardez !",
-                date = PREVIEW_NOW - 60_000,
-                status = SmsStatus.RECEIVED,
-                sender = "Alice",
-                attachments = listOf(MmsAttachment(Uri.EMPTY, "image/jpeg")),
+internal data class ThreadPreviewState(val info: SmsThreadInfo, val messages: List<SmsItem>, val photo: Uri? = null)
+
+internal class ThreadPreviewParam : PreviewParameterProvider<ThreadPreviewState> {
+    override val values: Sequence<ThreadPreviewState> = sequenceOf(
+        ThreadPreviewState(
+            info = SmsThreadInfo(1, listOf("+33611111111"), "Alice"),
+            messages = listOf(
+                SmsItem("sms-1", "Salut, tu viens ce soir ?", PREVIEW_NOW - 60_000, SmsStatus.RECEIVED),
+                SmsItem("sms-2", "Oui, vers 20 h", PREVIEW_NOW - 30_000, SmsStatus.SENT),
+                SmsItem("sms-3", "Je prends le pain", PREVIEW_NOW, SmsStatus.SENDING),
+                SmsItem("sms-4", "Message non parti", PREVIEW_NOW, SmsStatus.FAILED),
             ),
-            SmsItem("mms-2", "", PREVIEW_NOW, SmsStatus.RECEIVED, sender = "Carole", pendingMms = PendingMmsState(2, downloading = false)),
-            SmsItem("mms-3", "", PREVIEW_NOW, SmsStatus.RECEIVED, sender = "Alice", pendingMms = PendingMmsState(3, downloading = true)),
+        ),
+        ThreadPreviewState(
+            info = SmsThreadInfo(3, listOf("+33611111111", "+33633333333"), "Alice, Carole"),
+            messages = listOf(
+                SmsItem(
+                    key = "mms-1",
+                    body = "Regardez !",
+                    date = PREVIEW_NOW - 60_000,
+                    status = SmsStatus.RECEIVED,
+                    sender = "Alice",
+                    attachments = listOf(MmsAttachment(Uri.EMPTY, "image/jpeg")),
+                ),
+                SmsItem("mms-2", "", PREVIEW_NOW, SmsStatus.RECEIVED, sender = "Carole", pendingMms = PendingMmsState(2, downloading = false)),
+                SmsItem("mms-3", "", PREVIEW_NOW, SmsStatus.RECEIVED, sender = "Alice", pendingMms = PendingMmsState(3, downloading = true)),
+            ),
+        ),
+        // Photo choisie, pas encore envoyée.
+        ThreadPreviewState(
+            info = SmsThreadInfo(1, listOf("+33611111111"), "Alice"),
+            messages = listOf(
+                SmsItem("mms-4", "Voilà la photo", PREVIEW_NOW, SmsStatus.SENT, attachments = listOf(MmsAttachment(Uri.EMPTY, "image/jpeg"))),
+            ),
+            photo = Uri.EMPTY,
         ),
     )
 }
 
 @PreviewsDayNight
 @Composable
-internal fun ThreadViewPreview(@PreviewParameter(ThreadPreviewParam::class) thread: Pair<SmsThreadInfo, List<SmsItem>>) = ElementPreview {
-    ThreadView(info = thread.first, messages = thread.second, text = "", onTextChange = {}, onSend = {}, onRetryMms = {}, onBack = {})
+internal fun ThreadViewPreview(@PreviewParameter(ThreadPreviewParam::class) state: ThreadPreviewState) = ElementPreview {
+    ThreadView(
+        info = state.info,
+        messages = state.messages,
+        text = "",
+        photo = state.photo,
+        onTextChange = {},
+        onAttachPhoto = {},
+        onRemovePhoto = {},
+        onSend = {},
+        onRetryMms = {},
+        onBack = {},
+    )
 }

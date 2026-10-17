@@ -41,7 +41,8 @@ object MmsStore {
     private const val ADDRESS_FROM = 137
     private const val ADDRESS_TO = 151
     private const val ADDRESS_CC = 130
-    private const val CHARSET_UTF8 = 106
+    const val CHARSET_UTF8 = 106
+    private const val INSERT_ADDRESS_TOKEN = "insert-address-token"
 
     // État de téléchargement d'un avis en attente (colonne "st", mêmes valeurs qu'Android).
     const val STATE_DOWNLOADING = 0x81
@@ -191,27 +192,7 @@ object MmsStore {
         } ?: return null
         val messageId = ContentUris.parseId(messageUri)
 
-        // Pièces : le texte est rangé dans la base, les fichiers (photos…) dans un fichier géré par Android.
-        val partsUri = Uri.parse("content://mms/$messageId/part")
-        for (part in pdu.parts) {
-            val partValues = ContentValues().apply {
-                put(Telephony.Mms.Part.CONTENT_TYPE, part.contentType)
-                put(Telephony.Mms.Part.NAME, part.name)
-                put(Telephony.Mms.Part.FILENAME, part.fileName)
-                put(Telephony.Mms.Part.CONTENT_ID, part.contentId)
-                put(Telephony.Mms.Part.CONTENT_LOCATION, part.contentLocation)
-                if (part.isText) {
-                    put(Telephony.Mms.Part.CHARSET, CHARSET_UTF8)
-                    put(Telephony.Mms.Part.TEXT, part.text())
-                }
-            }
-            try {
-                val partUri = resolver.insert(partsUri, partValues) ?: continue
-                if (!part.isText) resolver.openOutputStream(partUri)?.use { it.write(part.data) }
-            } catch (e: Exception) {
-                Timber.e(e, "Impossible d'enregistrer une pièce du MMS (%s)", part.contentType)
-            }
-        }
+        saveParts(context, messageId, pdu.parts)
 
         // Adresses.
         if (from.isNotEmpty()) saveAddress(context, messageId, from, ADDRESS_FROM)
@@ -238,6 +219,80 @@ object MmsStore {
             context.contentResolver.delete(ContentUris.withAppendedId(Telephony.Mms.CONTENT_URI, id), null, null)
         } catch (e: Exception) {
             Timber.w(e, "Impossible de retirer l'avis de MMS")
+        }
+    }
+
+    /**
+     * Enregistre un MMS à envoyer dans la boîte d'envoi de la conversation avec [recipients].
+     * Il passe à "envoyé" ou "échec" avec [setSendResult].
+     */
+    fun saveOutgoing(context: Context, recipients: List<String>, parts: List<MmsPart>, transactionId: String, size: Int, subscriptionId: Int?): Uri? {
+        return try {
+            val threadId = Telephony.Threads.getOrCreateThreadId(context, recipients.toSet())
+            val values = ContentValues().apply {
+                put(Telephony.Mms.THREAD_ID, threadId)
+                put(Telephony.Mms.DATE, System.currentTimeMillis() / 1000)
+                put(Telephony.Mms.MESSAGE_BOX, Telephony.Mms.MESSAGE_BOX_OUTBOX)
+                put(Telephony.Mms.READ, 1)
+                put(Telephony.Mms.SEEN, 1)
+                put(Telephony.Mms.MESSAGE_TYPE, MmsPdu.TYPE_SEND_REQ)
+                put(Telephony.Mms.MMS_VERSION, MmsPdu.MMS_VERSION_1_2)
+                put(Telephony.Mms.TRANSACTION_ID, transactionId)
+                put(Telephony.Mms.CONTENT_TYPE, "application/vnd.wap.multipart.related")
+                put(Telephony.Mms.MESSAGE_CLASS, "personal")
+                put(Telephony.Mms.MESSAGE_SIZE, size)
+                put(Telephony.Mms.TEXT_ONLY, if (parts.all { it.isText }) 1 else 0)
+                subscriptionId?.let { put(Telephony.Mms.SUBSCRIPTION_ID, it) }
+            }
+            val uri = context.contentResolver.insert(Telephony.Mms.Outbox.CONTENT_URI, values) ?: return null
+            val messageId = ContentUris.parseId(uri)
+            saveParts(context, messageId, parts)
+            // L'expéditeur est complété par l'opérateur, comme dans le MMS envoyé.
+            saveAddress(context, messageId, INSERT_ADDRESS_TOKEN, ADDRESS_FROM)
+            recipients.forEach { saveAddress(context, messageId, it, ADDRESS_TO) }
+            Timber.i("MMS à envoyer enregistré (%d pièce(s)) : %s", parts.size, uri)
+            uri
+        } catch (e: Exception) {
+            Timber.e(e, "Impossible d'enregistrer le MMS à envoyer")
+            null
+        }
+    }
+
+    /** MMS envoyé ([sent], avec l'identifiant [messageId] donné par l'opérateur) ou en échec. */
+    fun setSendResult(context: Context, uri: Uri, sent: Boolean, messageId: String?) {
+        val values = ContentValues().apply {
+            put(Telephony.Mms.MESSAGE_BOX, if (sent) Telephony.Mms.MESSAGE_BOX_SENT else Telephony.Mms.MESSAGE_BOX_FAILED)
+            messageId?.let { put(Telephony.Mms.MESSAGE_ID, it) }
+        }
+        try {
+            context.contentResolver.update(uri, values, null, null)
+        } catch (e: Exception) {
+            Timber.e(e, "Impossible de mettre à jour l'état du MMS envoyé")
+        }
+    }
+
+    /** Pièces : le texte est rangé dans la base, les fichiers (photos…) dans un fichier géré par Android. */
+    private fun saveParts(context: Context, messageId: Long, parts: List<MmsPart>) {
+        val resolver = context.contentResolver
+        val partsUri = Uri.parse("content://mms/$messageId/part")
+        for (part in parts) {
+            val partValues = ContentValues().apply {
+                put(Telephony.Mms.Part.CONTENT_TYPE, part.contentType)
+                put(Telephony.Mms.Part.NAME, part.name)
+                put(Telephony.Mms.Part.FILENAME, part.fileName)
+                put(Telephony.Mms.Part.CONTENT_ID, part.contentId)
+                put(Telephony.Mms.Part.CONTENT_LOCATION, part.contentLocation)
+                if (part.isText) {
+                    put(Telephony.Mms.Part.CHARSET, CHARSET_UTF8)
+                    put(Telephony.Mms.Part.TEXT, part.text())
+                }
+            }
+            try {
+                val partUri = resolver.insert(partsUri, partValues) ?: continue
+                if (!part.isText) resolver.openOutputStream(partUri)?.use { it.write(part.data) }
+            } catch (e: Exception) {
+                Timber.e(e, "Impossible d'enregistrer une pièce du MMS (%s)", part.contentType)
+            }
         }
     }
 
