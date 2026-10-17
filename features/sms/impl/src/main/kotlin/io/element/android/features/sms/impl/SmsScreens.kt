@@ -166,9 +166,6 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
         )
     }
 
-    // Augmente à chaque changement dans la base SMS/MMS (nouveau message…) ou à l'accord des contacts : déclenche un rechargement.
-    val version = rememberSmsChanges(context) + contactsGranted + refresh
-
     // Pigeon doit être l'app SMS par défaut pour lire et envoyer les SMS : sinon, un bandeau propose de le devenir.
     // Vérifié à chaque retour sur l'écran (le réglage a pu changer entre-temps).
     var isDefaultApp by remember { mutableStateOf(true) }
@@ -185,6 +182,10 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
         refresh++
     }
     val notDefaultApp = stringResource(R.string.screen_sms_error_not_default_app)
+
+    // Augmente à chaque changement dans la base SMS/MMS (nouveau message…), à l'accord des contacts
+    // ou quand Pigeon devient l'app par défaut : déclenche un rechargement.
+    val version = rememberSmsChanges(context) + contactsGranted + refresh
 
     // Texte proposé par une autre app sans destinataire : on demande le numéro avant d'ouvrir la conversation.
     var draftWithoutRecipient by rememberSaveable { mutableStateOf<String?>(null) }
