@@ -6,7 +6,9 @@
 package io.element.android.features.sms.impl
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.graphics.BitmapFactory
@@ -84,12 +86,14 @@ import io.element.android.libraries.designsystem.components.dialogs.TextFieldDia
 import io.element.android.libraries.designsystem.preview.ElementPreview
 import io.element.android.libraries.designsystem.preview.PreviewsDayNight
 import io.element.android.libraries.designsystem.theme.aliasScreenTitle
+import io.element.android.libraries.designsystem.theme.components.ButtonSize
 import io.element.android.libraries.designsystem.theme.components.FloatingActionButton
 import io.element.android.libraries.designsystem.theme.components.HorizontalDivider
 import io.element.android.libraries.designsystem.theme.components.Icon
 import io.element.android.libraries.designsystem.theme.components.IconButton
 import io.element.android.libraries.designsystem.theme.components.Scaffold
 import io.element.android.libraries.designsystem.theme.components.Text
+import io.element.android.libraries.designsystem.theme.components.TextButton
 import io.element.android.libraries.designsystem.theme.components.TextField
 import io.element.android.libraries.designsystem.theme.components.TopAppBar
 import io.element.android.libraries.ui.strings.CommonStrings
@@ -163,7 +167,24 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
     }
 
     // Augmente à chaque changement dans la base SMS/MMS (nouveau message…) ou à l'accord des contacts : déclenche un rechargement.
-    val version = rememberSmsChanges(context) + contactsGranted
+    val version = rememberSmsChanges(context) + contactsGranted + refresh
+
+    // Pigeon doit être l'app SMS par défaut pour lire et envoyer les SMS : sinon, un bandeau propose de le devenir.
+    // Vérifié à chaque retour sur l'écran (le réglage a pu changer entre-temps).
+    var isDefaultApp by remember { mutableStateOf(true) }
+    var refresh by remember { mutableIntStateOf(0) }
+    LaunchedEffect(resumed) {
+        if (resumed) {
+            val nowDefault = isDefaultSmsApp(context)
+            if (nowDefault && !isDefaultApp) refresh++ // devenue app par défaut : recharge
+            isDefaultApp = nowDefault
+        }
+    }
+    val defaultAppRequest = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        isDefaultApp = isDefaultSmsApp(context)
+        refresh++
+    }
+    val notDefaultApp = stringResource(R.string.screen_sms_error_not_default_app)
 
     // Texte proposé par une autre app sans destinataire : on demande le numéro avant d'ouvrir la conversation.
     var draftWithoutRecipient by rememberSaveable { mutableStateOf<String?>(null) }
@@ -177,13 +198,24 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
             return
         }
         scope.launch {
-            openThread = withContext(Dispatchers.IO) {
-                val info = when {
-                    threadId != null -> SmsRepository.threadInfo(context, threadId)
-                    address != null -> SmsRepository.threadInfo(context, address)
-                    else -> null
+            val opened = withContext(Dispatchers.IO) {
+                try {
+                    val info = when {
+                        threadId != null -> SmsRepository.threadInfo(context, threadId)
+                        address != null -> SmsRepository.threadInfo(context, address)
+                        else -> null
+                    }
+                    info?.let { OpenThread(it, draft) }
+                } catch (e: Exception) {
+                    // Sans le rôle d'app SMS par défaut, Android refuse l'accès aux conversations.
+                    Timber.w(e, "Ouverture de la conversation impossible")
+                    null
                 }
-                info?.let { OpenThread(it, draft) }
+            }
+            if (opened != null) {
+                openThread = opened
+            } else {
+                Toast.makeText(context, notDefaultApp, Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -202,6 +234,8 @@ internal fun SmsApp(target: SmsTarget?, resumed: Boolean) {
             version = version,
             conversations = conversations,
             onLoaded = { conversations = it },
+            isDefaultApp = isDefaultApp,
+            onMakeDefault = { defaultAppRequest.launch(makeDefaultSmsAppIntent(context)) },
             askRecipient = draftWithoutRecipient != null,
             onOpen = { openThread = OpenThread(SmsThreadInfo(it.threadId, it.addresses, it.displayName)) },
             onNewConversation = { number ->
@@ -275,6 +309,8 @@ private fun ConversationListScreen(
     version: Int,
     conversations: List<SmsConversation>?,
     onLoaded: (List<SmsConversation>) -> Unit,
+    isDefaultApp: Boolean,
+    onMakeDefault: () -> Unit,
     askRecipient: Boolean,
     onOpen: (SmsConversation) -> Unit,
     onNewConversation: (String) -> Unit,
@@ -286,6 +322,8 @@ private fun ConversationListScreen(
     }
     ConversationListView(
         conversations = conversations,
+        isDefaultApp = isDefaultApp,
+        onMakeDefault = onMakeDefault,
         askRecipient = askRecipient,
         onOpen = onOpen,
         onNewConversation = onNewConversation,
@@ -301,6 +339,8 @@ private fun ConversationListScreen(
 @Composable
 private fun ConversationListView(
     conversations: List<SmsConversation>?,
+    isDefaultApp: Boolean,
+    onMakeDefault: () -> Unit,
     askRecipient: Boolean,
     onOpen: (SmsConversation) -> Unit,
     onNewConversation: (String) -> Unit,
@@ -318,13 +358,16 @@ private fun ConversationListView(
             }
         },
     ) { padding ->
-        when {
-            conversations == null -> Unit // chargement
-            conversations.isEmpty() -> CenteredText(stringResource(R.string.screen_sms_list_empty), Modifier.padding(padding))
-            else -> LazyColumn(contentPadding = padding, modifier = Modifier.fillMaxSize()) {
-                items(conversations, key = { it.threadId }) { conversation ->
-                    ConversationRow(conversation, onClick = { onOpen(conversation) })
-                    HorizontalDivider()
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (!isDefaultApp) NotDefaultAppBanner(onMakeDefault)
+            when {
+                conversations == null -> Unit // chargement
+                conversations.isEmpty() -> CenteredText(stringResource(R.string.screen_sms_list_empty))
+                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(conversations, key = { it.threadId }) { conversation ->
+                        ConversationRow(conversation, onClick = { onOpen(conversation) })
+                        HorizontalDivider()
+                    }
                 }
             }
         }
@@ -348,6 +391,37 @@ private fun ConversationListView(
         )
     }
 }
+
+/** Bandeau "Pigeon n'est pas l'app SMS par défaut", avec un bouton pour le devenir. */
+@Composable
+private fun NotDefaultAppBanner(onMakeDefault: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(ElementTheme.colors.bgCriticalSubtle)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(R.string.screen_sms_not_default_app),
+            style = ElementTheme.typography.fontBodyMdRegular,
+            color = ElementTheme.colors.textPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(text = stringResource(R.string.screen_sms_make_default_app), onClick = onMakeDefault, size = ButtonSize.Medium)
+    }
+}
+
+/** Pigeon est l'app SMS par défaut du téléphone. */
+private fun isDefaultSmsApp(context: Context): Boolean = Telephony.Sms.getDefaultSmsPackage(context) == context.packageName
+
+/** Demande à Android de faire de Pigeon l'app SMS par défaut. */
+private fun makeDefaultSmsAppIntent(context: Context): Intent =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        context.getSystemService(RoleManager::class.java).createRequestRoleIntent(RoleManager.ROLE_SMS)
+    } else {
+        Intent(Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT).putExtra(Telephony.Sms.Intents.EXTRA_PACKAGE_NAME, context.packageName)
+    }
 
 @Composable
 private fun ConversationRow(conversation: SmsConversation, onClick: () -> Unit) {
@@ -707,7 +781,7 @@ internal class ConversationListPreviewParam : PreviewParameterProvider<List<SmsC
 @PreviewsDayNight
 @Composable
 internal fun ConversationListViewPreview(@PreviewParameter(ConversationListPreviewParam::class) conversations: List<SmsConversation>?) = ElementPreview {
-    ConversationListView(conversations = conversations, askRecipient = false, onOpen = {}, onNewConversation = {}, onNewConversationDismissed = {})
+    ConversationListView(conversations = conversations, isDefaultApp = conversations != null, onMakeDefault = {}, askRecipient = false, onOpen = {}, onNewConversation = {}, onNewConversationDismissed = {})
 }
 
 internal class ThreadPreviewParam : PreviewParameterProvider<Pair<SmsThreadInfo, List<SmsItem>>> {

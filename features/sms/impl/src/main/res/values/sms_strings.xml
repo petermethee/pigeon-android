@@ -20,6 +20,8 @@
     <string name="screen_sms_new_conversation_number">Phone number</string>
     <string name="screen_sms_last_message_outgoing">You: %1$s</string>
 
+    <string name="screen_sms_not_default_app">Pigeon is not the default SMS app: SMS cannot be read or sent.</string>
+    <string name="screen_sms_make_default_app">Set as default</string>
     <string name="screen_sms_composer_placeholder">SMS</string>
     <string name="screen_sms_error_not_default_app">Cannot send: Pigeon must be the default SMS app.</string>
     <string name="screen_sms_group_reply_unavailable">Replying to a group is not possible yet.</string>

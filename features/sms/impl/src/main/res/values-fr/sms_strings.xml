@@ -16,6 +16,8 @@
     <string name="screen_sms_new_conversation_number">Numéro de téléphone</string>
     <string name="screen_sms_last_message_outgoing">Vous : %1$s</string>
 
+    <string name="screen_sms_not_default_app">Pigeon n\'est pas l\'app SMS par défaut : impossible de lire ou d\'envoyer les SMS.</string>
+    <string name="screen_sms_make_default_app">Définir</string>
     <string name="screen_sms_composer_placeholder">SMS</string>
     <string name="screen_sms_error_not_default_app">Envoi impossible : Pigeon doit être l\'app SMS par défaut.</string>
     <string name="screen_sms_group_reply_unavailable">Répondre à un groupe n\'est pas encore possible.</string>
